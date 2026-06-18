@@ -40,10 +40,13 @@ static apex_status_t dev_send(apex_activation_device_t *act,
 static void dev_send_capability(apex_activation_device_t *act)
 {
     /* class_msg_id + class_spec_version + uuid(16) + n_preconditions +
-     * n_trigger_sources + categories(N) + n_gpio_bindings + bindings(2 each:
-     * precondition_index + muxed pin/active-level byte). */
+     * n_trigger_sources + categories(N) +
+     * n_gpio_bindings + bindings(2 each) +
+     * n_gpio_trigger_bindings + trigger_bindings(2 each). */
     uint8_t buf[1 + 1 + 16 + 1 + 1 + APEX_ACTIVATION_MAX_TRIGGER_SOURCES +
-                1 + 2 * APEX_ACTIVATION_MAX_PRECONDITIONS];
+                1 + 2 * APEX_ACTIVATION_MAX_PRECONDITIONS +
+                1 + 2 * APEX_ACTIVATION_MAX_TRIGGER_SOURCES +
+                1 + 5 * APEX_ACTIVATION_MAX_PRECONDITIONS];
     size_t i = 0;
     buf[i++] = APEX_ACT_MSG_CAPABILITY;
     buf[i++] = act->caps.class_spec_version;
@@ -66,6 +69,38 @@ static void dev_send_capability(apex_activation_device_t *act)
         }
         buf[i++] = pin_byte;
     }
+    /* GPIO-backed trigger source mappings (§6.3): optional tail. */
+    buf[i++] = act->caps.n_gpio_trigger_bindings;
+    for (uint8_t b = 0; b < act->caps.n_gpio_trigger_bindings; b++) {
+        buf[i++] = act->caps.gpio_trigger_bindings[b].trigger_source_idx;
+        uint8_t pin_byte = (uint8_t)(act->caps.gpio_trigger_bindings[b].pin &
+                                     APEX_ACTIVATION_GPIO_PIN_MASK);
+        if (act->caps.gpio_trigger_bindings[b].active_high) {
+            pin_byte |= APEX_ACTIVATION_GPIO_ACTIVE_HIGH_BIT;
+        }
+        buf[i++] = pin_byte;
+    }
+    /* Host-condition bindings (§6.3): for each host-evaluated precondition
+     * (host_condition != NONE), declare the gating flight condition + auto_trigger
+     * so the host can drive START_PRECONDITION from CAPABILITY + STATUS alone,
+     * without depending on the optional PRECOND_INFO exchange (§6.6). Sparse:
+     * device-local / auto-started preconditions (host_condition == NONE) are omitted. */
+    size_t nhc_pos = i++;          /* reserve the count byte */
+    uint8_t nhc = 0;
+    if (act->caps.precond_info) {
+        for (uint8_t p = 0; p < act->caps.n_preconditions; p++) {
+            const apex_activation_precond_info_t *info = &act->caps.precond_info[p];
+            if (info->host_condition == APEX_ACT_PRECOND_NONE) continue;
+            buf[i++] = p;
+            buf[i++] = info->host_condition;
+            buf[i++] = (uint8_t)(info->condition_param & 0xFFu);
+            buf[i++] = (uint8_t)(info->condition_param >> 8);
+            buf[i++] = info->auto_trigger;
+            nhc++;
+        }
+    }
+    buf[nhc_pos] = nhc;
+
     if (dev_send(act, buf, i) == APEX_OK) {
         act->capability_sent = true;
     }
@@ -107,6 +142,44 @@ static void dev_send_ack(apex_activation_device_t *act,
         (uint8_t)act->state,
     };
     dev_send(act, buf, sizeof(buf));
+}
+
+static void dev_send_precond_info_reply(apex_activation_device_t *act,
+                                        uint8_t precond_idx,
+                                        uint8_t display_char_limit)
+{
+    if (!act->caps.precond_info) return;
+    if (precond_idx >= act->caps.n_preconditions) return;
+
+    const apex_activation_precond_info_t *info = &act->caps.precond_info[precond_idx];
+    /* Effective per-string limit: request value if non-zero, else the spec max. */
+    uint8_t max_len = (display_char_limit > 0 && display_char_limit <= APEX_ACT_PRECOND_STR_MAX)
+                      ? display_char_limit : APEX_ACT_PRECOND_STR_MAX;
+
+    /* class_msg_id(1) + precond_idx(1) + 4x(len_byte + up to max_len chars).
+     * Display strings only — the host_condition/auto_trigger hint moved to the
+     * CAPABILITY frame (§6.3) so it is reliably delivered; PRECOND_INFO is now
+     * purely cosmetic and non-blocking (§6.6). */
+    uint8_t buf[2 + 4 * (1 + APEX_ACT_PRECOND_STR_MAX)];
+    size_t i = 0;
+
+    buf[i++] = APEX_ACT_MSG_PRECOND_INFO_REPLY;
+    buf[i++] = precond_idx;
+
+    const char *strs[4] = {
+        info->str_not_started, info->str_running,
+        info->str_valid,       info->str_failed,
+    };
+    for (int s = 0; s < 4; s++) {
+        const char *str = strs[s];
+        uint8_t len = 0;
+        if (str) {
+            while (str[len] && len < max_len) len++;
+        }
+        buf[i++] = len;
+        for (uint8_t c = 0; c < len; c++) buf[i++] = (uint8_t)str[c];
+    }
+    dev_send(act, buf, i);
 }
 
 /* ---------------------------------------------------------------------------
@@ -237,6 +310,13 @@ apex_status_t apex_activation_device_set_payload_specific(apex_activation_device
     return APEX_OK;
 }
 
+void apex_activation_device_set_precond_info(apex_activation_device_t *act,
+                                             const apex_activation_precond_info_t *info)
+{
+    if (!act) return;
+    act->caps.precond_info = info;
+}
+
 /* ---------------------------------------------------------------------------
  * Device-side command handling
  * ------------------------------------------------------------------------- */
@@ -344,7 +424,17 @@ void apex_activation_device_on_rx(apex_activation_device_t *act,
                                   size_t payload_len)
 {
     if (!act || payload_len < 1) return;
-    if (payload[0] != APEX_ACT_MSG_COMMAND) return;
+    uint8_t msg_id = payload[0];
+
+    /* Handle PRECOND_INFO_REQUEST (no ACK required). */
+    if (msg_id == APEX_ACT_MSG_PRECOND_INFO_REQUEST) {
+        if (payload_len >= 3) {
+            dev_send_precond_info_reply(act, payload[1], payload[2]);
+        }
+        return;
+    }
+
+    if (msg_id != APEX_ACT_MSG_COMMAND) return;
     if (payload_len < 2) {
         dev_send_ack(act, 0, APEX_ACT_REJECT_MALFORMED);
         return;
@@ -500,9 +590,7 @@ static void host_handle_capability(apex_activation_host_t *h,
         cap.trigger_source_categories[i] = body[off + i];
     }
     off += cap.n_trigger_sources;
-    /* GPIO-backed precondition mappings (§6.3). Optional tail: a device that
-     * declares none, or an older device that predates the field, simply omits
-     * it and the host reads zero bindings. */
+    /* GPIO-backed precondition mappings — optional tail. */
     if (body_len >= off + 1) {
         uint8_t ng = body[off++];
         if (ng > APEX_ACTIVATION_MAX_PRECONDITIONS) return;
@@ -516,7 +604,40 @@ static void host_handle_capability(apex_activation_host_t *h,
                 (pin_byte & APEX_ACTIVATION_GPIO_ACTIVE_HIGH_BIT) != 0;
         }
     }
+    /* GPIO-backed trigger source mappings — optional tail after precond bindings. */
+    if (body_len >= off + 1) {
+        uint8_t nt = body[off++];
+        if (nt > APEX_ACTIVATION_MAX_TRIGGER_SOURCES) return;
+        if (body_len < off + (size_t)nt * 2) return;
+        cap.n_gpio_trigger_bindings = nt;
+        for (uint8_t i = 0; i < nt; i++) {
+            cap.gpio_trigger_bindings[i].trigger_source_idx = body[off++];
+            uint8_t pin_byte = body[off++];
+            cap.gpio_trigger_bindings[i].pin = pin_byte & APEX_ACTIVATION_GPIO_PIN_MASK;
+            cap.gpio_trigger_bindings[i].active_high =
+                (pin_byte & APEX_ACTIVATION_GPIO_ACTIVE_HIGH_BIT) != 0;
+        }
+    }
+    /* Host-condition bindings — optional tail (§6.3). 5 bytes each:
+     * precondition_idx, host_condition, condition_param(2), auto_trigger. */
+    if (body_len >= off + 1) {
+        uint8_t nhc = body[off++];
+        if (nhc > APEX_ACTIVATION_MAX_PRECONDITIONS) return;
+        if (body_len < off + (size_t)nhc * 5) return;
+        cap.n_host_conditions = nhc;
+        for (uint8_t i = 0; i < nhc; i++) {
+            cap.host_conditions[i].precondition_idx = body[off++];
+            cap.host_conditions[i].host_condition   = body[off++];
+            cap.host_conditions[i].condition_param =
+                (uint16_t)body[off] | ((uint16_t)body[off + 1] << 8);
+            off += 2;
+            cap.host_conditions[i].auto_trigger     = body[off++];
+        }
+    }
     h->n_precond_per_device[device_id] = cap.n_preconditions;
+    /* Fresh session: drop any stale outstanding PRECOND_INFO requests. The
+     * integrator re-requests in its on_capability hook below, which re-arms them. */
+    h->precond_info_pending[device_id] = 0;
     if (h->hooks.on_capability) {
         h->hooks.on_capability(h->hooks.on_capability_user, device_id, &cap);
     }
@@ -560,6 +681,17 @@ static void host_handle_status(apex_activation_host_t *h,
     if (h->hooks.on_status) {
         h->hooks.on_status(h->hooks.on_status_user, device_id, &st);
     }
+
+    /* Re-request any PRECOND_INFO whose reply hasn't arrived yet. STATUS is
+     * emitted ≥1 Hz, so a dropped PRECOND_INFO_REPLY self-heals within ~1 s.
+     * Display-only; never gates validation (§6.6). */
+    uint16_t pending = h->precond_info_pending[device_id];
+    for (uint8_t idx = 0; pending && idx < APEX_ACTIVATION_MAX_PRECONDITIONS; idx++) {
+        if (pending & (uint16_t)(1u << idx)) {
+            apex_activation_host_request_precond_info(
+                h, device_id, idx, h->precond_info_char_limit);
+        }
+    }
 }
 
 static void host_handle_ack(apex_activation_host_t *h,
@@ -573,6 +705,58 @@ static void host_handle_ack(apex_activation_host_t *h,
     ack.current_state  = (apex_activation_state_t)body[2];
     if (h->hooks.on_ack) {
         h->hooks.on_ack(h->hooks.on_ack_user, device_id, &ack);
+    }
+}
+
+static void host_handle_precond_info_reply(apex_activation_host_t *h,
+                                           uint8_t device_id,
+                                           const uint8_t *body, size_t body_len)
+{
+    /* precond_idx(1) + 4 length bytes minimum = 5 bytes. PRECOND_INFO_REPLY now
+     * carries only the display strings; the host_condition/auto_trigger hint
+     * moved to CAPABILITY (§6.3). */
+    if (body_len < 5) return;
+
+    size_t off = 0;
+    uint8_t precond_idx   = body[off++];
+    /* Reply landed — clear the outstanding-request bit so STATUS retry stops. */
+    if (precond_idx < APEX_ACTIVATION_MAX_PRECONDITIONS) {
+        h->precond_info_pending[device_id] &= (uint16_t)~(1u << precond_idx);
+    }
+    apex_activation_precond_info_t info;
+    /* Hint fields are no longer on the wire here — the host reads them from
+     * apex_activation_capability_t.host_conditions. Zero them so a consumer that
+     * inspects this struct can't read stale values. */
+    info.host_condition   = APEX_ACT_PRECOND_NONE;
+    info.condition_param  = 0;
+    info.auto_trigger     = 0;
+
+    /* Parse four length-prefixed strings. They are NOT NUL-terminated on the
+     * wire (each is immediately followed by the next string's length byte), so
+     * copy each into a NUL-terminated stack buffer before exposing it to the
+     * callback — the apex_activation_precond_info_t str_* fields are documented
+     * as C-strings valid for the duration of the (synchronous) callback. The
+     * buffers live until on_precond_info returns, which matches that contract. */
+    char strbuf[4][APEX_ACT_PRECOND_STR_MAX + 1];
+    const char *strs[4] = { NULL, NULL, NULL, NULL };
+    for (int s = 0; s < 4; s++) {
+        if (off >= body_len) return;
+        uint8_t len = body[off++];
+        if (off + len > body_len) return;
+        uint8_t copy = (len <= APEX_ACT_PRECOND_STR_MAX) ? len : APEX_ACT_PRECOND_STR_MAX;
+        memcpy(strbuf[s], body + off, copy);
+        strbuf[s][copy] = '\0';
+        strs[s] = (len > 0) ? strbuf[s] : NULL;
+        off += len;
+    }
+    info.str_not_started = strs[0];
+    info.str_running     = strs[1];
+    info.str_valid       = strs[2];
+    info.str_failed      = strs[3];
+
+    if (h->hooks.on_precond_info) {
+        h->hooks.on_precond_info(h->hooks.on_precond_info_user,
+                                 device_id, precond_idx, &info);
     }
 }
 
@@ -593,6 +777,9 @@ static void host_class_rx(void *user, uint8_t device_id,
         break;
     case APEX_ACT_MSG_ACK:
         host_handle_ack(h, device_id, body, body_len);
+        break;
+    case APEX_ACT_MSG_PRECOND_INFO_REPLY:
+        host_handle_precond_info_reply(h, device_id, body, body_len);
         break;
     default:
         break;
@@ -653,4 +840,25 @@ apex_status_t apex_activation_host_trigger(apex_activation_host_t *h,
                                            uint8_t device_id)
 {
     return host_send_cmd(h, device_id, APEX_ACT_CMD_TRIGGER, NULL, 0);
+}
+
+apex_status_t apex_activation_host_request_precond_info(
+    apex_activation_host_t *h,
+    uint8_t device_id,
+    uint8_t precondition_idx,
+    uint8_t display_char_limit)
+{
+    /* Mark this index outstanding so STATUS-driven retry re-requests it until
+     * the reply lands; remember the char limit for those re-requests. */
+    if (precondition_idx < APEX_ACTIVATION_MAX_PRECONDITIONS) {
+        h->precond_info_pending[device_id] |= (uint16_t)(1u << precondition_idx);
+    }
+    h->precond_info_char_limit = display_char_limit;
+    uint8_t buf[3] = {
+        APEX_ACT_MSG_PRECOND_INFO_REQUEST,
+        precondition_idx,
+        display_char_limit,
+    };
+    return apex_host_send(h->core, device_id, APEX_TRAFFIC_ACTIVATION,
+                          buf, sizeof(buf));
 }

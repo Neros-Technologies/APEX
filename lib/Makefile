@@ -19,7 +19,8 @@ SRCS := \
     $(SRC_DIR)/apex_host.c \
     $(SRC_DIR)/apex_device.c \
     $(SRC_DIR)/apex_activation.c \
-    $(SRC_DIR)/apex_analog_hmi.c
+    $(SRC_DIR)/apex_analog_hmi.c \
+    $(SRC_DIR)/apex_repeater.c
 
 OBJS := $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(SRCS))
 LIB  := $(BUILD_DIR)/libapex.a

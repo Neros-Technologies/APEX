@@ -60,6 +60,15 @@ static void send_heartbeat(apex_device_t *d)
     emit_frame(d, APEX_TRAFFIC_CONFIG, NULL, 0);
 }
 
+static void send_config_ack(apex_device_t *d)
+{
+    /* §3.2.6: confirm we latched the assigned ID. The outer device_id is now
+     * our assigned ID (emit_frame uses d->assigned_device_id); the body echoes
+     * it so the host can validate. */
+    uint8_t payload[2] = { APEX_CFG_MSG_CONFIG_ACK, d->assigned_device_id };
+    emit_frame(d, APEX_TRAFFIC_CONFIG, payload, sizeof(payload));
+}
+
 static void reset_to_discovery(apex_device_t *d)
 {
     d->assigned_device_id = APEX_DEVICE_ID_UNASSIGNED;
@@ -88,6 +97,9 @@ static void handle_config_reply(apex_device_t *d,
     case APEX_ACK_OK:
         d->assigned_device_id = assigned;
         set_link(d, APEX_DEVICE_STATE_CONNECTED);
+        /* §3.3: confirm the latch so the host can promote our slot from
+         * provisional (NEW) to CONNECTED immediately. */
+        send_config_ack(d);
         break;
     case APEX_ACK_REJECT_CLASS:
         set_link(d, APEX_DEVICE_STATE_REJECTED_CLASS);

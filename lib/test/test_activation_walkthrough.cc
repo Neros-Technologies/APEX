@@ -14,6 +14,7 @@
 #include <gtest/gtest.h>
 
 #include <cstring>
+#include <string>
 #include <vector>
 
 namespace {
@@ -71,6 +72,32 @@ static void on_ack(void* u, uint8_t did, const apex_activation_ack_t* a) {
     p->last = *a;
 }
 
+/* Device precond declaration: precond 0 is device-local (host_condition NONE,
+ * auto-started), precond 1 is host-started on PROPS_ON_FLYING with auto_trigger.
+ * Static so the lib can store it by reference for the device's lifetime. */
+static const apex_activation_precond_info_t kPrecondInfo[2] = {
+    /* host_condition, condition_param, auto_trigger, not_started, running, valid, failed */
+    { APEX_ACT_PRECOND_NONE,            0, 0, "SELFTEST PEND", "SELFTEST",   "SELFTEST OK", "SELFTEST FAIL" },
+    { APEX_ACT_PRECOND_PROPS_ON_FLYING, 0, 1, "AWAIT TAKEOFF", "CONFIRMING", "AIRBORNE",    "TAKEOFF FAIL"  },
+};
+
+struct PrecondInfoCapture {
+    int count = 0;
+    uint8_t last_idx = 0xFF;
+    uint8_t host_condition = 0xAA;   // sentinel: should be overwritten to NONE(0)
+    uint8_t auto_trigger = 0xAA;
+    std::string str_not_started;
+};
+static void on_precond_info(void* u, uint8_t /*did*/, uint8_t idx,
+                            const apex_activation_precond_info_t* info) {
+    auto* p = static_cast<PrecondInfoCapture*>(u);
+    p->count++;
+    p->last_idx = idx;
+    p->host_condition = info->host_condition;   // expected NONE — not on the wire here
+    p->auto_trigger = info->auto_trigger;       // expected 0
+    p->str_not_started = info->str_not_started ? info->str_not_started : "";
+}
+
 class ActivationWalkthrough : public ::testing::Test {
 protected:
     Bus bus{};
@@ -81,15 +108,29 @@ protected:
     CapCapture cap{};
     StatusCapture status{};
     AckCapture ack{};
+    PrecondInfoCapture pinfo{};
     bool on_execute_fired = false;
     uint32_t now_ms = 0;
 
     static void on_execute_cb(void* u) { *static_cast<bool*>(u) = true; }
 
-    // Activation device-side class RX trampoline.
+    /* Device class-RX context: forwards to the activation device, but also
+     * counts inbound PRECOND_INFO_REQUEST frames and can optionally swallow them
+     * (so the device never replies — used to exercise the host's retry). */
+    struct DevRx {
+        apex_activation_device_t* act;
+        int req_count;
+        bool swallow;
+    };
+    DevRx devrx{};
+
     static void dev_class_rx_trampoline(void* u, const uint8_t* p, size_t n) {
-        auto* act = static_cast<apex_activation_device_t*>(u);
-        apex_activation_device_on_rx(act, p, n);
+        auto* d = static_cast<DevRx*>(u);
+        if (n >= 1 && p[0] == APEX_ACT_MSG_PRECOND_INFO_REQUEST) {
+            d->req_count++;
+            if (d->swallow) return;  /* drop → device never sends a reply */
+        }
+        apex_activation_device_on_rx(d->act, p, n);
     }
 
     void SetUp() override {
@@ -104,6 +145,7 @@ protected:
         hh.on_capability = on_cap; hh.on_capability_user = &cap;
         hh.on_status = on_status; hh.on_status_user = &status;
         hh.on_ack = on_ack; hh.on_ack_user = &ack;
+        hh.on_precond_info = on_precond_info; hh.on_precond_info_user = &pinfo;
         ASSERT_EQ(APEX_OK, apex_activation_host_init(&act_host, &host, &hh));
 
         // Device core.
@@ -113,7 +155,8 @@ protected:
         dc.tx = device_tx;
         dc.tx_user = &bus;
         dc.on_class_rx = dev_class_rx_trampoline;
-        dc.on_class_rx_user = &act_dev;
+        devrx.act = &act_dev;
+        dc.on_class_rx_user = &devrx;
         apex_device_init(&dev_core, &dc);
 
         // Activation device caps — the §9.1 example device.
@@ -130,6 +173,7 @@ protected:
         caps.trigger_source_categories[1] = APEX_TRIGGER_HARDWARE_INPUT;
         caps.auto_start_mask = (1u << 0);   // precondition 0 auto-starts
         caps.initial_activations_remaining = 1;
+        caps.precond_info = kPrecondInfo;   // declares host_condition + strings
 
         apex_activation_device_hooks_t dh{};
         dh.on_execute = on_execute_cb;
@@ -295,6 +339,59 @@ TEST_F(ActivationWalkthrough, BadPreconditionIndexRejected) {
     PumpUntilQuiet();
     EXPECT_EQ(ack_before + 1, ack.count);
     EXPECT_EQ(APEX_ACT_REJECT_BAD_INDEX, ack.last.result);
+}
+
+/* The host-start hint travels in CAPABILITY, sparse: only host-evaluated
+ * preconditions appear. Precond 1 (PROPS_ON_FLYING) is listed; precond 0
+ * (host_condition NONE, device-local) is omitted. */
+TEST_F(ActivationWalkthrough, CapabilityCarriesHostConditionBindings) {
+    PumpUntilQuiet();
+    ASSERT_GE(cap.count, 1);
+    ASSERT_EQ(1, cap.last.n_host_conditions);
+    EXPECT_EQ(1, cap.last.host_conditions[0].precondition_idx);
+    EXPECT_EQ(APEX_ACT_PRECOND_PROPS_ON_FLYING, cap.last.host_conditions[0].host_condition);
+    EXPECT_EQ(1, cap.last.host_conditions[0].auto_trigger);
+}
+
+/* PRECOND_INFO_REPLY is display-strings only now: the callback delivers the
+ * strings, and the host_condition/auto_trigger fields are NOT taken from the
+ * wire (they're zeroed — the real values are in CAPABILITY, asserted above). */
+TEST_F(ActivationWalkthrough, PrecondInfoReplyIsStringsOnly) {
+    PumpUntilQuiet();
+    uint8_t did = apex_device_get_id(&dev_core);
+    ASSERT_NE(APEX_DEVICE_ID_UNASSIGNED, did);
+
+    ASSERT_EQ(APEX_OK, apex_activation_host_request_precond_info(&act_host, did, 1, 24));
+    PumpUntilQuiet();
+
+    ASSERT_GE(pinfo.count, 1);
+    EXPECT_EQ(1, pinfo.last_idx);
+    EXPECT_EQ("AWAIT TAKEOFF", pinfo.str_not_started);
+    EXPECT_EQ(APEX_ACT_PRECOND_NONE, pinfo.host_condition);  // not carried here
+    EXPECT_EQ(0, pinfo.auto_trigger);
+}
+
+/* A dropped PRECOND_INFO_REPLY self-heals: while the reply is suppressed the
+ * host re-requests on each STATUS; once the reply gets through, it caches. */
+TEST_F(ActivationWalkthrough, PrecondInfoRetriedUntilCached) {
+    PumpUntilQuiet();
+    uint8_t did = apex_device_get_id(&dev_core);
+    ASSERT_NE(APEX_DEVICE_ID_UNASSIGNED, did);
+
+    devrx.swallow = true;  // device receives requests but never replies
+    int before = devrx.req_count;
+    ASSERT_EQ(APEX_OK, apex_activation_host_request_precond_info(&act_host, did, 1, 24));
+
+    // Advance several STATUS periods (1 Hz). Each STATUS should re-trigger a request.
+    for (int i = 0; i < 4; i++) Pump(1100, 1);
+    EXPECT_GE(devrx.req_count - before, 3);  // initial + repeated retries
+    EXPECT_EQ(0, pinfo.count);               // nothing cached while swallowed
+
+    // Let the reply through — the next retry round caches it and stops.
+    devrx.swallow = false;
+    for (int i = 0; i < 3; i++) Pump(1100, 1);
+    EXPECT_GE(pinfo.count, 1);
+    EXPECT_EQ("AWAIT TAKEOFF", pinfo.str_not_started);
 }
 
 }  // namespace

@@ -9,6 +9,7 @@
 
 #include "apex/apex_activation.h"
 #include "apex/apex_analog_hmi.h"
+#include "apex/apex_repeater.h"
 #include "apex/apex_cobs.h"
 #include "apex/apex_core.h"
 #include "apex/apex_crc.h"

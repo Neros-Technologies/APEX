@@ -79,6 +79,8 @@ typedef enum {
     APEX_CFG_MSG_NAME_REQUEST  = 3,
     APEX_CFG_MSG_NAME_REPLY    = 4,
     APEX_CFG_MSG_HOST_STATE    = 5,
+    APEX_CFG_MSG_CONFIG_ACK    = 6, /* Device→Host: confirms the device latched its
+                                     * assigned device_id (§3.2.6, §3.3). */
 } apex_config_msg_id_t;
 
 /* DEVICE_INFO interface flags — §3.2.1 */

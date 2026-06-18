@@ -25,7 +25,8 @@ LIB_SRCS := \
     $(LIB_DIR)/src/apex_host.c \
     $(LIB_DIR)/src/apex_device.c \
     $(LIB_DIR)/src/apex_activation.c \
-    $(LIB_DIR)/src/apex_analog_hmi.c
+    $(LIB_DIR)/src/apex_analog_hmi.c \
+    $(LIB_DIR)/src/apex_repeater.c
 
 LIB_OBJS := $(patsubst $(LIB_DIR)/src/%.c,$(BUILD_DIR)/lib/%.o,$(LIB_SRCS))
 
@@ -38,7 +39,8 @@ TESTS := \
     test_discovery \
     test_activation_walkthrough \
     test_activation_gpio \
-    test_analog_hmi
+    test_analog_hmi \
+    test_repeater
 
 TEST_BINS := $(addprefix $(BUILD_DIR)/,$(TESTS))
 

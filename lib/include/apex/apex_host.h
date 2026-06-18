@@ -30,11 +30,18 @@ extern "C" {
 /* Compile-time tuning. Override these by defining them before including this
  * header (e.g., via a -D flag). */
 #ifndef APEX_HOST_MAX_DEVICES
-#define APEX_HOST_MAX_DEVICES 8
+#define APEX_HOST_MAX_DEVICES 16
 #endif
 
 #ifndef APEX_HOST_MAX_CLASSES
 #define APEX_HOST_MAX_CLASSES 4
+#endif
+
+/* How long a slot lingers in FAULT before the host frees it and returns the
+ * slot + device_id to the pool (§3.3 slot recycling). "A few seconds" past the
+ * 5 s heartbeat watchdog that produced the FAULT. */
+#ifndef APEX_HOST_FAULT_RECYCLE_MS
+#define APEX_HOST_FAULT_RECYCLE_MS 5000u
 #endif
 
 /* TX callback — the library hands the caller a fully encoded on-wire frame
@@ -85,7 +92,8 @@ typedef struct {
     apex_device_status_t status;
     uint8_t device_class;       /* the traffic_type the device declared */
     uint8_t interface_flags;
-    uint32_t last_rx_ms;
+    uint32_t last_rx_ms;        /* last inbound frame attributable to this slot */
+    uint32_t status_since_ms;   /* when the slot entered its current status */
 } apex_host_device_slot_t;
 
 typedef struct {
@@ -105,6 +113,13 @@ typedef struct apex_host {
     uint32_t now_ms;
     uint32_t last_host_state_tx_ms;
     bool host_state_ever_sent;
+    /* Sticky discovery dedup: the device_id of the most recent provisional (NEW)
+     * assignment made for a DEVICE_INFO(id=0). While that slot is still NEW the
+     * host resends the same CONFIG_REPLY on each repeated DEVICE_INFO(id=0)
+     * instead of allocating a fresh slot, so a slow-to-latch device never burns
+     * more than one slot. Cleared when the slot is promoted or recycled.
+     * 0 (UNASSIGNED) = no pending assignment. */
+    uint8_t last_unassigned_id;
 } apex_host_t;
 
 /* ---------------------------------------------------------------------------
@@ -162,6 +177,10 @@ void apex_host_mark_expended(apex_host_t *h, uint8_t device_id);
 
 const apex_host_device_slot_t *apex_host_get_device(const apex_host_t *h,
                                                     uint8_t device_id);
+
+/* Number of occupied slots (device_id != UNASSIGNED), including provisional
+ * (NEW) and FAULT slots not yet recycled. */
+size_t apex_host_device_count(const apex_host_t *h);
 
 #ifdef __cplusplus
 }

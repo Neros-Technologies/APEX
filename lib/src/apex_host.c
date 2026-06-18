@@ -51,8 +51,38 @@ static void set_status(apex_host_t *h,
 {
     if (slot->status == s) return;
     slot->status = s;
+    slot->status_since_ms = h->now_ms;
     if (h->cfg.on_device_event) {
         h->cfg.on_device_event(h->cfg.on_device_event_user, slot->device_id, s);
+    }
+}
+
+/* Return a slot to the pool: clear its assigned ID and any sticky-dedup
+ * reference so find_free_slot can reuse it. No event is fired — recycling is
+ * internal table management; the FAULT (or, for a provisional slot, none) event
+ * already conveyed the device's fate. */
+static void free_slot(apex_host_t *h, apex_host_device_slot_t *slot)
+{
+    if (h->last_unassigned_id == slot->device_id) {
+        h->last_unassigned_id = APEX_DEVICE_ID_UNASSIGNED;
+    }
+    slot->device_id       = APEX_DEVICE_ID_UNASSIGNED;
+    slot->status          = APEX_DEV_STATUS_UNKNOWN;
+    slot->device_class    = 0;
+    slot->interface_flags = 0;
+    slot->last_rx_ms      = 0;
+    slot->status_since_ms = 0;
+}
+
+/* Promote a provisional (NEW) slot to CONNECTED on the first frame that proves
+ * the device latched its assigned ID (explicit CONFIG_ACK, or any frame bearing
+ * the assigned ID as a fallback — §3.3). No-op if the slot is not NEW. */
+static void confirm_latch(apex_host_t *h, apex_host_device_slot_t *slot)
+{
+    if (!slot || slot->status != APEX_DEV_STATUS_NEW) return;
+    set_status(h, slot, APEX_DEV_STATUS_CONNECTED);
+    if (h->last_unassigned_id == slot->device_id) {
+        h->last_unassigned_id = APEX_DEVICE_ID_UNASSIGNED;
     }
 }
 
@@ -164,6 +194,25 @@ static void handle_device_info(apex_host_t *h,
     /* Accept. Allocate or reuse a slot for this device. */
     apex_host_device_slot_t *slot = NULL;
     if (src_device_id == APEX_DEVICE_ID_UNASSIGNED) {
+        /* Sticky dedup: a device whose CONFIG_REPLY was lost keeps sending
+         * DEVICE_INFO(id=0). While the slot we already assigned is still NEW
+         * (provisional — the device has not yet confirmed its ID), resend the
+         * same CONFIG_REPLY and refresh that slot's liveness instead of burning
+         * a new slot. A device thus occupies at most one slot until it latches. */
+        if (h->last_unassigned_id != APEX_DEVICE_ID_UNASSIGNED) {
+            apex_host_device_slot_t *prev = find_slot(h, h->last_unassigned_id);
+            if (prev != NULL && prev->status == APEX_DEV_STATUS_NEW) {
+                prev->last_rx_ms = h->now_ms;  /* still actively trying */
+                reply[1] = APEX_ACK_OK;
+                reply[2] = h->last_unassigned_id;
+                emit_frame(h, APEX_TRAFFIC_CONFIG, APEX_DEVICE_ID_UNASSIGNED,
+                           reply, sizeof(reply));
+                return;
+            }
+            /* Pending slot vanished or already latched — drop the stale ref. */
+            h->last_unassigned_id = APEX_DEVICE_ID_UNASSIGNED;
+        }
+
         slot = find_free_slot(h);
         if (!slot) {
             reply[1] = APEX_ACK_REJECT_CLASS;  /* no slot — treat as unsupported */
@@ -178,14 +227,21 @@ static void handle_device_info(apex_host_t *h,
             emit_frame(h, APEX_TRAFFIC_CONFIG, reply_device_id, reply, sizeof(reply));
             return;
         }
+        /* Provisional: reserve the slot as NEW but do NOT mark CONNECTED. The
+         * device confirms by sending CONFIG_ACK (or any frame bearing the
+         * assigned ID); confirm_latch() then promotes it. No event fires for NEW. */
         slot->device_id       = new_id;
         slot->status          = APEX_DEV_STATUS_NEW;
         slot->device_class    = device_class_req;
         slot->interface_flags = interface_flags_req;
         slot->last_rx_ms      = h->now_ms;
+        slot->status_since_ms = h->now_ms;
+        h->last_unassigned_id = new_id;  /* arm sticky dedup */
         reply_device_id = APEX_DEVICE_ID_UNASSIGNED;  /* per §3.2.2 */
         reply[1] = APEX_ACK_OK;
         reply[2] = new_id;
+        emit_frame(h, APEX_TRAFFIC_CONFIG, reply_device_id, reply, sizeof(reply));
+        return;  /* stay NEW; promotion happens on confirmation */
     } else {
         /* DEVICE_INFO from a device with an already-assigned ID — this is the
          * multi-class discovery path (§3.7.4). Same physical device, new
@@ -222,6 +278,21 @@ static void handle_device_info(apex_host_t *h,
     set_status(h, slot, APEX_DEV_STATUS_CONNECTED);
 }
 
+static void handle_config_ack(apex_host_t *h,
+                              uint8_t src_device_id,
+                              const uint8_t *body,
+                              size_t body_len)
+{
+    /* §3.2.6: CONFIG_ACK confirms the device latched its assigned ID. The body
+     * echoes that ID; it must match the frame's outer device_id and a slot we
+     * assigned. Promotion (NEW → CONNECTED) is otherwise identical to the
+     * fallback path in on_frame — confirm_latch() is idempotent. */
+    if (body_len < 1) return;
+    uint8_t echoed_id = body[0];
+    if (echoed_id != src_device_id) return;  /* malformed / mismatched — drop */
+    confirm_latch(h, find_slot(h, src_device_id));
+}
+
 static void handle_name_reply(apex_host_t *h,
                               uint8_t src_device_id,
                               const uint8_t *body,
@@ -253,6 +324,9 @@ static void handle_config_frame(apex_host_t *h,
     case APEX_CFG_MSG_DEVICE_INFO:
         handle_device_info(h, src_device_id, body, body_len);
         break;
+    case APEX_CFG_MSG_CONFIG_ACK:
+        handle_config_ack(h, src_device_id, body, body_len);
+        break;
     case APEX_CFG_MSG_NAME_REPLY:
         handle_name_reply(h, src_device_id, body, body_len);
         break;
@@ -278,9 +352,16 @@ static void on_frame(void *user,
      * destination from the host) and from unknown IDs (post-discovery). */
     if (hdr->device_id == APEX_DEVICE_ID_BROADCAST) return;
 
-    /* Stamp last_rx for any known device. */
+    /* Stamp last_rx for any known device, and treat any frame bearing an
+     * assigned ID as confirmation that the device latched it: promote a
+     * provisional (NEW) slot to CONNECTED. This is the fallback that covers a
+     * lost CONFIG_ACK or a device that does not send one — the explicit
+     * CONFIG_ACK (handled below) just does this sooner (§3.3). */
     apex_host_device_slot_t *slot = find_slot(h, hdr->device_id);
-    if (slot) slot->last_rx_ms = h->now_ms;
+    if (slot) {
+        slot->last_rx_ms = h->now_ms;
+        confirm_latch(h, slot);
+    }
 
     if (hdr->traffic_type == APEX_TRAFFIC_CONFIG) {
         handle_config_frame(h, hdr->device_id, payload, payload_len);
@@ -325,13 +406,38 @@ void apex_host_tick(apex_host_t *h, uint32_t now_ms)
         }
     }
 
-    /* Per-device watchdog. */
+    /* Per-device watchdog + slot recycling. */
     for (size_t i = 0; i < APEX_HOST_MAX_DEVICES; i++) {
         apex_host_device_slot_t *slot = &h->devices[i];
         if (slot->device_id == APEX_DEVICE_ID_UNASSIGNED) continue;
-        if (slot->status != APEX_DEV_STATUS_CONNECTED) continue;
-        if ((uint32_t)(now_ms - slot->last_rx_ms) >= APEX_HEARTBEAT_WATCHDOG_MS) {
-            set_status(h, slot, APEX_DEV_STATUS_FAULT);
+
+        switch (slot->status) {
+        case APEX_DEV_STATUS_NEW:
+            /* Provisional slot. The device was assigned an ID but has not yet
+             * confirmed it. An actively-retrying device keeps last_rx_ms fresh
+             * via the dedup path; one that vanishes mid-handshake goes silent
+             * and is recycled so its slot returns to the pool. */
+            if ((uint32_t)(now_ms - slot->last_rx_ms) >= APEX_HEARTBEAT_WATCHDOG_MS) {
+                free_slot(h, slot);
+            }
+            break;
+        case APEX_DEV_STATUS_CONNECTED:
+            if ((uint32_t)(now_ms - slot->last_rx_ms) >= APEX_HEARTBEAT_WATCHDOG_MS) {
+                set_status(h, slot, APEX_DEV_STATUS_FAULT);
+            }
+            break;
+        case APEX_DEV_STATUS_FAULT:
+            /* Recycle a faulted slot a few seconds after it faulted so the slot
+             * and its device_id return to the pool (a recovered device
+             * re-discovers into a fresh slot). status_since_ms — not last_rx_ms —
+             * so a device still emitting on an asymmetric link still recycles. */
+            if ((uint32_t)(now_ms - slot->status_since_ms) >= APEX_HOST_FAULT_RECYCLE_MS) {
+                free_slot(h, slot);
+            }
+            break;
+        default:
+            /* EXPENDED / UNKNOWN: no watchdog (§4 — heartbeat tracking off). */
+            break;
         }
     }
 }
@@ -400,4 +506,14 @@ const apex_host_device_slot_t *apex_host_get_device(const apex_host_t *h,
         if (h->devices[i].device_id == device_id) return &h->devices[i];
     }
     return NULL;
+}
+
+size_t apex_host_device_count(const apex_host_t *h)
+{
+    if (!h) return 0;
+    size_t n = 0;
+    for (size_t i = 0; i < APEX_HOST_MAX_DEVICES; i++) {
+        if (h->devices[i].device_id != APEX_DEVICE_ID_UNASSIGNED) n++;
+    }
+    return n;
 }
