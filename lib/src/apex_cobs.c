@@ -155,7 +155,7 @@ apex_status_t apex_cobs_decode_framed(const uint8_t *input,
     }
 
     i = 0;
-    while (input[i] == 0x00 && i < length) {
+    while (i < length && input[i] == 0x00) {
         i++;
     }
     if (length - i <= 1) {
