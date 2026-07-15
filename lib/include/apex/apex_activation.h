@@ -1,7 +1,7 @@
 /**
  * @file apex_activation.h
  * @brief Activation device class (traffic_type = 1). Both Host and Device
- *        sides. See APEX_Activation_Class.md for the spec this implements.
+ *        sides. See APEX_Device_Class_Activation.md for the spec this implements.
  *
  * Copyright (c) 2026 Neros Technologies. MIT License — see LICENSE.
  */
@@ -103,13 +103,16 @@ typedef enum {
 } apex_activation_ack_result_t;
 
 typedef enum {
-    APEX_ACT_PRECOND_NONE           = 0x00,  /* not evaluable by host */
-    APEX_ACT_PRECOND_HOVER          = 0x01,  /* low velocity + low altitude rate */
-    APEX_ACT_PRECOND_ALT_ABOVE      = 0x02,  /* altitude > condition_param metres */
-    APEX_ACT_PRECOND_ALT_BELOW      = 0x03,  /* altitude < condition_param metres */
-    APEX_ACT_PRECOND_GPS_FIX        = 0x04,  /* 3D GPS fix acquired */
-    APEX_ACT_PRECOND_PROPS_ON_FLYING= 0x05,  /* HOST_STATE == PROPS_ON_FLYING */
-    APEX_ACT_PRECOND_CUSTOM         = 0xFF,  /* host cannot evaluate; manual only */
+    APEX_ACT_PRECOND_NONE              = 0x00,  /* not evaluable by host */
+    APEX_ACT_PRECOND_HOVER             = 0x01,  /* low velocity + low altitude rate */
+    APEX_ACT_PRECOND_ALT_ABOVE         = 0x02,  /* altitude > condition_param metres */
+    APEX_ACT_PRECOND_ALT_BELOW         = 0x03,  /* altitude < condition_param metres */
+    APEX_ACT_PRECOND_GPS_FIX           = 0x04,  /* 3D GPS fix acquired */
+    APEX_ACT_PRECOND_PROPS_ON_FLYING   = 0x05,  /* HOST_STATE == PROPS_ON_FLYING */
+    APEX_ACT_PRECOND_PROPS_ON_GROUND   = 0x06,  /* FC armed (props at idle, no flight check) */
+    APEX_ACT_PRECOND_PROPS_WITH_THROTTLE = 0x07, /* FC armed and throttle input non-zero */
+    APEX_ACT_PRECOND_PROPS_ON_FLYING_TIMER = 0x08, /* condition_param seconds after PROPS_ON_FLYING; resets if craft lands */
+    APEX_ACT_PRECOND_CUSTOM            = 0xFF,  /* host cannot evaluate; manual only */
 } apex_activation_host_condition_t;
 
 #define APEX_ACT_FAULT_PRECONDITION_FAILED    (1u << 0)

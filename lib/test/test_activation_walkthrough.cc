@@ -1,4 +1,4 @@
-/* Replays the §9.4 single-activation walkthrough from APEX_Activation_Class.md.
+/* Replays the §9.4 single-activation walkthrough from APEX_Device_Class_Activation.md.
  *
  * Two same-process actors loopback to each other:
  *   - Host: apex_host_t + apex_activation_host_t

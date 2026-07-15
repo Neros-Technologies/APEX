@@ -39,7 +39,7 @@ $(BUILD_DIR):
 	@mkdir -p $(BUILD_DIR)
 
 test: $(LIB)
-	$(MAKE) -C test
+	$(MAKE) -C test check
 
 clean:
 	rm -rf $(BUILD_DIR)

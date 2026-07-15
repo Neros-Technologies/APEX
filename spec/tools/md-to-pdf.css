@@ -1,0 +1,154 @@
+/* Page-fit tweaks on top of github-markdown.css. */
+.markdown-body {
+  box-sizing: border-box;
+  min-width: 200px;
+  max-width: 100%;
+  margin: 0 auto;
+  padding: 0;
+  font-size: 11pt;
+}
+
+/* --- Page-break hardening ------------------------------------------------ */
+/*
+ * The defaults in headless-Chrome PDF generation are happy to split tables
+ * mid-row, leave a heading orphaned at the bottom of a page, or break a
+ * code block across pages. Tighten that up.
+ */
+
+/* A heading should never be the last thing on a page. */
+h1, h2, h3, h4, h5, h6 {
+  break-after: avoid-page;
+  page-break-after: avoid;
+}
+
+/* Don't split atomic blocks across pages. */
+pre, .mermaid, blockquote, figure {
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+/*
+ * Mermaid diagrams: inline SVG rendered to a data-URI <img> inside a
+ * `.mermaid-fig` wrapper <p> (build.mjs `inlineMermaid`).
+ *
+ * Keep each diagram whole on one page. Two things are needed:
+ *  1. `break-inside: avoid` on the WRAPPER (the block that would otherwise be
+ *     split) — applying it to the <img> alone does not stop the <p> from
+ *     breaking across a page boundary.
+ *  2. A `max-height` that fits the A4 printable area (297mm − 15mm − 15mm =
+ *     267mm; capped at 250mm for safety). Without this, a diagram taller than
+ *     the page cannot satisfy `break-inside: avoid` and Chrome splits it
+ *     anyway. The cap scales such a diagram down to fit a single page.
+ */
+.markdown-body p.mermaid-fig {
+  break-inside: avoid;
+  page-break-inside: avoid;
+  text-align: center;
+  margin: 0;
+}
+.markdown-body p.mermaid-fig > img {
+  max-width: 100%;
+  max-height: 250mm;
+  height: auto;
+  width: auto;
+}
+
+/*
+ * Tables: prefer to keep small tables intact, but still allow large tables
+ * to split between rows (never within a row).
+ */
+table { break-inside: auto; page-break-inside: auto; }
+tr, th, td { break-inside: avoid; page-break-inside: avoid; }
+thead { display: table-header-group; }
+tfoot { display: table-footer-group; }
+
+/*
+ * Tables in the PDF use a FIXED column layout. GitHub's CSS renders tables
+ * as `display: block` (scrollable on a web page); in print there is no
+ * scrollbar, so a wide table overflows the A4 margin, and the default
+ * content-driven `auto` layout over-shrinks narrow columns until short
+ * words like "Value" wrap mid-word.
+ *
+ * The build step (build.mjs `tableExtension`) gives every table a
+ * `.fixed-table` class and a <colgroup> with explicit per-column widths.
+ * `table-layout: fixed` makes the browser honor those widths exactly,
+ * independent of content — narrow columns get a stable, generous width
+ * and the wide column (Description / Meaning) absorbs the rest.
+ */
+.markdown-body table.fixed-table {
+  display: table;
+  width: 100%;
+  table-layout: fixed;
+  font-size: 9.5pt;          /* tables a touch smaller than body text */
+}
+
+/*
+ * Ordinary prose in cells wraps at word boundaries and is NEVER broken
+ * mid-word. With the column widths fixed above, the narrow columns are
+ * already wide enough that single words fit; multi-item cells (e.g.
+ * "STANDBY, VALIDATING") still wrap between items.
+ */
+.markdown-body table.fixed-table th,
+.markdown-body table.fixed-table td {
+  word-break: normal;
+  overflow-wrap: break-word;   /* break only if a word truly overflows */
+  hyphens: none;
+  vertical-align: top;
+}
+
+/*
+ * Inline <code> identifiers (e.g. `ACTIVATION_CLASS_STATE_ACTIVE`) cannot
+ * wrap by default. Allow them to break between characters so a long
+ * identifier wraps inside its fixed-width cell rather than overflowing.
+ */
+.markdown-body table.fixed-table td code,
+.markdown-body table.fixed-table th code {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* Body-text orphans/widows: at least 3 lines together at a page boundary. */
+p, li { orphans: 3; widows: 3; }
+
+/*
+ * Destination pins (build.mjs `pinAllHeadingDestinations`): a hidden block of
+ * internal links, one per heading, that forces Chrome's PDF printer to mint a
+ * named destination for EVERY anchor — so cross-document `Foo.pdf#anchor`
+ * links always resolve, even to a heading nothing links to internally.
+ *
+ * `display:none` would drop the links from the DOM and defeat the purpose, so
+ * the block is collapsed to zero size and pushed out of the layout instead.
+ * The links remain present (destinations get created) but render nothing.
+ */
+.dest-pins {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  font-size: 0;
+  line-height: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* --- DRAFT watermark ----------------------------------------------------- */
+/*
+ * position: fixed in Chrome's print path repeats the element on every page.
+ * Low-opacity red so text remains fully readable underneath.
+ */
+.watermark {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) rotate(-60deg);
+  font-family: sans-serif;
+  font-size: 220pt;
+  font-weight: 900;
+  letter-spacing: 0.05em;
+  color: rgba(200, 30, 30, 0.12);
+  z-index: 9999;
+  pointer-events: none;
+  user-select: none;
+  white-space: nowrap;
+}

@@ -1,0 +1,25 @@
+{
+  "name": "apex",
+  "version": "1.0.0",
+  "description": "APEX (Adaptive Payload EXchange) — protocol specification build tooling.",
+  "main": "index.js",
+  "scripts": {
+    "build": "node tools/build.mjs",
+    "link-sections": "node tools/insert_section_links.mjs",
+    "clean": "rm -rf build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Neros-Technologies/APEX.git"
+  },
+  "keywords": [],
+  "author": "Neros Technologies",
+  "license": "MIT",
+  "type": "commonjs",
+  "devDependencies": {
+    "@mermaid-js/mermaid-cli": "^11.14.0",
+    "github-markdown-css": "^5.9.0",
+    "md-to-pdf": "^5.2.5",
+    "pdf-lib": "^1.17.1"
+  }
+}

@@ -1,6 +1,7 @@
 /**
  * @file apex_cobs.c
- * @brief COBS encode/decode — ported from neros_common/common/cobs/cobs.c.
+ * @brief COBS encode/decode — a standard Consistent Overhead Byte Stuffing
+ *        implementation.
  *
  * Copyright (c) 2026 Neros Technologies. MIT License — see LICENSE.
  */

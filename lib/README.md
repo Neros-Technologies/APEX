@@ -17,7 +17,7 @@ heartbeat) and for the first device class, **Activation**.
 
 ```sh
 make            # produces build/libapex.a
-make test       # builds and runs unit tests (needs gtest, see test/README)
+make test       # builds and runs unit tests (needs GoogleTest; see test/Makefile)
 make clean
 ```
 
@@ -42,7 +42,7 @@ include/apex/        public headers (this is what consumers #include)
   apex_activation.h    Activation class — both Host and Device sides
 src/                 one .c per public header
 test/                gtest-based unit tests; mirrors the byte-level worked
-                     example from APEX_Activation_Class.md §9.4
+                     example from APEX_Device_Class_Activation.md §9.4
 ```
 
 ## Consumption patterns
@@ -54,7 +54,7 @@ make
 gcc my_app.c -Iapex/include -Lapex/build -lapex
 ```
 
-### As drop-in source (e.g. in betaflight)
+### As drop-in source (e.g. into flight-controller firmware)
 
 Append the `.c` files to your source list:
 

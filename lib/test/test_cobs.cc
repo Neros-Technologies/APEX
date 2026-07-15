@@ -1,5 +1,5 @@
-/* Ported from neros_common/common/cobs/cobs_test.cc with the StatusCode →
- * apex_status_t mapping. Same algorithm under test, same expected outputs. */
+/* Standard COBS test cases, with return codes expressed as apex_status_t.
+ * Same algorithm under test, same expected outputs. */
 #include "apex/apex_cobs.h"
 
 #include <gtest/gtest.h>

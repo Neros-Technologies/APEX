@@ -1,11 +1,11 @@
-# APEX library unit tests — googletest harness, mirrors betaflight's pattern.
+# APEX library unit tests — googletest harness.
 #
-# By default, points at the gtest fused-source vendored in betaflight at
-# ../../../airside/betaflight/lib/test/gtest. Override GTEST_DIR to use a
-# different copy.
+# By default, points at a GoogleTest source tree at ./gtest (the fused/full
+# source, with inc/ and src/gtest-all.cc). Override GTEST_DIR to point at your
+# own copy, e.g. `make GTEST_DIR=/path/to/googletest`.
 
 LIB_DIR    := ..
-GTEST_DIR  ?= $(LIB_DIR)/../../betaflight/lib/test/gtest
+GTEST_DIR  ?= gtest
 BUILD_DIR  := build
 
 CXX        ?= c++

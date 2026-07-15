@@ -3,9 +3,9 @@
  * @brief COBS (Consistent Overhead Byte Stuffing) — the framing scheme APEX
  *        uses on the wire. See APEX_Core.md §3.
  *
- * Ported from neros_common/common/cobs (Joseph Murphy, 2026-04-29), with the
- * return-code surface swapped to apex_status_t so the library has no external
- * deps. Algorithm and tests are unchanged.
+ * A standard COBS implementation, with the return-code surface expressed as
+ * apex_status_t so the library has no external dependencies. The algorithm and
+ * its tests are the textbook COBS ones.
  *
  * Copyright (c) 2026 Neros Technologies. MIT License — see LICENSE.
  */

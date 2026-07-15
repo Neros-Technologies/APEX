@@ -1,0 +1,9 @@
+build/
+node_modules/
+.DS_Store
+
+# Agents
+GEMINI.md
+.gemini/
+CLAUDE.md
+.claude/
