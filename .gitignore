@@ -7,3 +7,5 @@ GEMINI.md
 .gemini/
 CLAUDE.md
 .claude/
+# Local googletest tree for lib/test (user-provided via GTEST_DIR)
+lib/test/gtest/

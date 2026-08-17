@@ -1,7 +1,9 @@
 /**
  * @file apex_activation.h
- * @brief Activation device class (traffic_type = 1). Both Host and Device
- *        sides. See APEX_Device_Class_Activation.md for the spec this implements.
+ * @brief Activation device class (traffic_type = 2). Both Host and Device
+ *        sides. See APEX_Device_Class_Activation.md for the spec this
+ *        implements — Activation **class version 1** (negotiated at discovery,
+ *        §1.1; class frames carry no version byte of their own).
  *
  * Copyright (c) 2026 Neros Technologies. MIT License — see LICENSE.
  */
@@ -35,14 +37,20 @@ extern "C" {
  * Spec enums — §3, §4.2, §5, §6.4, §6.5
  * ------------------------------------------------------------------------- */
 
+/* §3 state machine (class version 1). The values are renumbered from class
+ * version 0 to insert the two first-class transient states ENABLING (0x04) and
+ * DISABLING (0x06); progression stays monotonic so "armed or beyond" is
+ * state >= ENABLED && state != FAULT. */
 typedef enum {
     APEX_ACTIVATION_STATE_RESERVED   = 0x00,
     APEX_ACTIVATION_STATE_STANDBY    = 0x01,
     APEX_ACTIVATION_STATE_VALIDATING = 0x02,
     APEX_ACTIVATION_STATE_READY      = 0x03,
-    APEX_ACTIVATION_STATE_ENABLED    = 0x04,
-    APEX_ACTIVATION_STATE_EXECUTING  = 0x05,
-    APEX_ACTIVATION_STATE_EXHAUSTED  = 0x06,
+    APEX_ACTIVATION_STATE_ENABLING   = 0x04,  /* new in v1: enable in progress */
+    APEX_ACTIVATION_STATE_ENABLED    = 0x05,
+    APEX_ACTIVATION_STATE_DISABLING  = 0x06,  /* new in v1: disable in progress */
+    APEX_ACTIVATION_STATE_EXECUTING  = 0x07,
+    APEX_ACTIVATION_STATE_EXHAUSTED  = 0x08,
     APEX_ACTIVATION_STATE_FAULT      = 0xFF,
 } apex_activation_state_t;
 
@@ -60,30 +68,34 @@ typedef enum {
     APEX_TRIGGER_EXTERNAL_SIGNAL = 0x04,
 } apex_trigger_category_t;
 
-/* GPIO pins usable as precondition triggers. The core 10-pin connector exposes
- * exactly two discrete-IO lines (Core §2: Pin 3 / Pin 4, the APEX_INTERFACE_
- * FLAG_GPIO pins), so a GPIO-backed precondition is always bound to one of
- * these two. The value is the connector pin number and is passed verbatim to
- * the application's gpio_read hook. */
+/* GPIO pins usable as precondition / trigger lines. The core 10-pin connector
+ * exposes exactly two discrete-IO lines (Core §2: Pin 3 / Pin 4, the
+ * APEX_INTERFACE_FLAG_GPIO pins), so a GPIO-backed binding is always one of
+ * these two. The value is the connector pin number, passed verbatim to the
+ * application's gpio_read hook. */
 typedef enum {
     APEX_ACTIVATION_GPIO_PIN3 = 3,
     APEX_ACTIVATION_GPIO_PIN4 = 4,
 } apex_activation_gpio_pin_t;
 
 /* On the wire (§6.3) each GPIO mapping packs the pin and its active level into a
- * single byte: the low 7 bits are the connector pin (apex_activation_gpio_pin_t,
- * 3 or 4), and bit 7 is the active level — set = active-high, clear = active-low.
- * Both fit comfortably given pins only run 3..4. */
+ * single byte: the low 7 bits are the connector pin (3 or 4), bit 7 is the
+ * active level — set = active-high, clear = active-low. */
 #define APEX_ACTIVATION_GPIO_PIN_MASK        0x7Fu
 #define APEX_ACTIVATION_GPIO_ACTIVE_HIGH_BIT 0x80u
 
+/* §6.1 inner-payload sub-header message ids. IDs 5 and 6 were PRECOND_INFO_
+ * REQUEST / PRECOND_INFO_REPLY in class version 0; they are RETIRED in v1 and
+ * are **never reused** — dual-stack code can therefore never confuse a retired
+ * id with a new message. */
 typedef enum {
-    APEX_ACT_MSG_CAPABILITY            = 1,
-    APEX_ACT_MSG_COMMAND               = 2,
-    APEX_ACT_MSG_STATUS                = 3,
-    APEX_ACT_MSG_ACK                   = 4,
-    APEX_ACT_MSG_PRECOND_INFO_REQUEST  = 5,
-    APEX_ACT_MSG_PRECOND_INFO_REPLY    = 6,
+    APEX_ACT_MSG_CAPABILITY        = 1,
+    APEX_ACT_MSG_COMMAND           = 2,
+    APEX_ACT_MSG_STATUS            = 3,
+    APEX_ACT_MSG_ACK               = 4,
+    /* 5, 6 retired (class v0 PRECOND_INFO); never reused. */
+    APEX_ACT_MSG_HOST_DISPLAY_INFO = 7,  /* host → device (§6.7) */
+    APEX_ACT_MSG_DISPLAY_TEXT      = 8,  /* device → host (§6.8) */
 } apex_activation_msg_id_t;
 
 typedef enum {
@@ -100,6 +112,11 @@ typedef enum {
     APEX_ACT_REJECT_PRECONDITION  = 0x03,
     APEX_ACT_REJECT_NOT_SUPPORTED = 0x04,
     APEX_ACT_REJECT_MALFORMED     = 0x05,
+    /* new in v1 (§6.4): valid, understood command that the device temporarily
+     * cannot comply with — an irreversible transition is in progress (e.g. a
+     * mid-transition reversal it cannot honor right now). Not a fault; the host
+     * retries after the next state-transition STATUS. */
+    APEX_ACT_REJECT_BUSY          = 0x06,
 } apex_activation_ack_result_t;
 
 typedef enum {
@@ -109,9 +126,9 @@ typedef enum {
     APEX_ACT_PRECOND_ALT_BELOW         = 0x03,  /* altitude < condition_param metres */
     APEX_ACT_PRECOND_GPS_FIX           = 0x04,  /* 3D GPS fix acquired */
     APEX_ACT_PRECOND_PROPS_ON_FLYING   = 0x05,  /* HOST_STATE == PROPS_ON_FLYING */
-    APEX_ACT_PRECOND_PROPS_ON_GROUND   = 0x06,  /* FC armed (props at idle, no flight check) */
-    APEX_ACT_PRECOND_PROPS_WITH_THROTTLE = 0x07, /* FC armed and throttle input non-zero */
-    APEX_ACT_PRECOND_PROPS_ON_FLYING_TIMER = 0x08, /* condition_param seconds after PROPS_ON_FLYING; resets if craft lands */
+    APEX_ACT_PRECOND_PROPS_ON_GROUND   = 0x06,  /* props at idle on ground */
+    APEX_ACT_PRECOND_PROPS_WITH_THROTTLE = 0x07, /* props + throttle >= threshold */
+    APEX_ACT_PRECOND_PROPS_ON_FLYING_TIMER = 0x08, /* condition_param s after PROPS_ON_FLYING */
     APEX_ACT_PRECOND_CUSTOM            = 0xFF,  /* host cannot evaluate; manual only */
 } apex_activation_host_condition_t;
 
@@ -120,6 +137,10 @@ typedef enum {
 #define APEX_ACT_FAULT_TRIGGER_WINDOW_EXPIRED (1u << 2)
 #define APEX_ACT_FAULT_COMMS_LOST             (1u << 3)
 #define APEX_ACT_FAULT_INTERNAL_ERROR         (1u << 4)
+/* new in v1 (§6.5 bit 5): an enable/disable transition failed but the device
+ * returned safely to READY. Self-clearing — cleared on the next successful
+ * transition; does NOT by itself force FAULT. Reserved is now bits 6..15. */
+#define APEX_ACT_FAULT_TRANSITION_FAILED      (1u << 5)
 
 /* Latched bits force the device into FAULT; self-clearing bits do not. */
 #define APEX_ACT_FAULT_LATCHED_MASK                                       \
@@ -132,45 +153,74 @@ typedef enum {
 /* Periodic STATUS floor — §6.6. */
 #define APEX_ACTIVATION_STATUS_PERIOD_MS 1000u
 
-/* Maximum characters per PRECOND_INFO_REPLY string (§6.8). */
-#define APEX_ACT_PRECOND_STR_MAX 32u
+/* ---------------------------------------------------------------------------
+ * DISPLAY_TEXT / HOST_DISPLAY_INFO — §6.7, §6.8
+ * ------------------------------------------------------------------------- */
+
+/* HOST_DISPLAY_INFO defaults. When the device has received NO HOST_DISPLAY_INFO
+ * it assumes char_limit = 32 and n_banner_lines = 1 (§6.7). Note the asymmetry:
+ * a received char_limit of 0 means 32, but a received n_banner_lines of 0 means
+ * "banner text unsupported" — the default of 1 applies only when the frame was
+ * never received at all. */
+#define APEX_ACT_DISPLAY_CHAR_LIMIT_DEFAULT 32u
+#define APEX_ACT_DISPLAY_BANNER_LINES_DEFAULT 1u
+
+/* DISPLAY_TEXT target ranges (§6.8). */
+#define APEX_ACT_DISPLAY_TARGET_PRECOND_MIN 0x00u
+#define APEX_ACT_DISPLAY_TARGET_PRECOND_MAX 0x0Fu
+#define APEX_ACT_DISPLAY_TARGET_BANNER_MIN  0xF0u
+#define APEX_ACT_DISPLAY_TARGET_BANNER_MAX  0xFEu
+
+/* Number of distinct DISPLAY_TEXT targets we rate-limit independently: the 16
+ * precondition lines (0x00..0x0F) plus the 15 banner lines (0xF0..0xFE). */
+#define APEX_ACT_DISPLAY_N_PRECOND_TARGETS 16u
+#define APEX_ACT_DISPLAY_N_BANNER_TARGETS  15u
+#define APEX_ACT_DISPLAY_N_TARGETS \
+    (APEX_ACT_DISPLAY_N_PRECOND_TARGETS + APEX_ACT_DISPLAY_N_BANNER_TARGETS)
+
+/* §6.6 DISPLAY_TEXT rate cap: <= 5 Hz sustained per target => >= 200 ms between
+ * accepted pushes to the same target. This library REJECTS an over-rate push
+ * (apex_activation_device_push_text returns APEX_ERR_BAD_STATE) rather than
+ * queueing it — latest-wins semantics (§6.8) make dropping an intermediate
+ * update safe, and rejecting keeps the device from ever displacing STATUS/ACK
+ * timing with a DISPLAY_TEXT backlog. */
+#define APEX_ACT_DISPLAY_MIN_INTERVAL_MS 200u
+
+/* Largest text length we will place on the wire in one DISPLAY_TEXT frame. The
+ * inner payload is class_msg_id + target + text_len + text, and payload_length
+ * is a u8 (Core §3.1.1), so text is capped at 252 bytes regardless of a large
+ * host char_limit. */
+#define APEX_ACT_DISPLAY_TEXT_MAX 252u
+
+/* ---------------------------------------------------------------------------
+ * Shared: host-condition binding (§6.3)
+ * ------------------------------------------------------------------------- */
+
+/* Host-condition binding declared in CAPABILITY (§6.3): for a host-started
+ * precondition the host evaluates against a flight condition, the gating
+ * condition and whether the host should send START_PRECONDITION autonomously.
+ * Used on BOTH sides — the device declares them in its caps, the host receives
+ * them in the CAPABILITY callback. Carried in CAPABILITY (never on the advisory
+ * DISPLAY_TEXT channel) so the host's auto-start logic depends only on the
+ * reliably-delivered CAPABILITY + STATUS frames (§6.3). */
+typedef struct {
+    uint8_t  precondition_idx;
+    uint8_t  host_condition;   /* apex_activation_host_condition_t */
+    uint16_t condition_param;
+    uint8_t  auto_trigger;     /* 1 = host fires START_PRECONDITION autonomously */
+} apex_activation_host_condition_binding_t;
 
 /* ---------------------------------------------------------------------------
  * Device-side capability declaration
  * ------------------------------------------------------------------------- */
 
-/* Per-precondition display strings and host-condition hint.
- *
- * DEVICE side (caps.precond_info): the device declares each precondition fully
- * here — its host_condition/condition_param/auto_trigger AND its display strings.
- * The library routes the hint into the CAPABILITY frame (§6.3, as a
- * host_condition_binding for any precondition whose host_condition != NONE) and
- * the strings into PRECOND_INFO_REPLY (§6.8).
- *
- * HOST side (on_precond_info callback): only the str_* fields are populated
- * (const char* into the frame buffer — valid only during the callback; copy to
- * persist). The host_condition/condition_param/auto_trigger fields are NOT set
- * here — the host reads those from apex_activation_capability_t.host_conditions
- * (delivered in the CAPABILITY callback), which is reliable and does not depend
- * on the optional PRECOND_INFO exchange (§6.6). */
-typedef struct {
-    uint8_t     host_condition;    /* apex_activation_host_condition_t (device-decl only) */
-    uint16_t    condition_param;   /* e.g. altitude in metres for ALT_ABOVE/BELOW (device-decl only) */
-    uint8_t     auto_trigger;      /* 1 = host fires START_PRECONDITION autonomously (device-decl only) */
-    const char *str_not_started;   /* displayed when precond is NotStarted */
-    const char *str_running;       /* displayed when precond is Running */
-    const char *str_valid;         /* displayed when precond is Valid */
-    const char *str_failed;        /* displayed when precond is Failed; include recovery hint */
-} apex_activation_precond_info_t;
-
 /* Optional binding of a precondition to a GPIO line. When a precondition is
  * GPIO-backed, the class drives its Running → Valid transition by polling the
- * line via the gpio_read hook (see apex_activation_device_hooks_t) instead of
- * the application calling apex_activation_device_set_precondition_state(). The
- * binding does not change *when* validation starts: the precondition still has
- * to be Running (auto-start via auto_start_mask, or host-start via
- * START_PRECONDITION) before the line is polled. This stays purely
- * device-internal — the wire protocol (§6) is unchanged. */
+ * line via the gpio_read hook instead of the application calling
+ * apex_activation_device_set_precondition_state(). The binding does not change
+ * *when* validation starts: the precondition still has to be Running (auto-start
+ * via auto_start_mask, or host-start via START_PRECONDITION) before the line is
+ * polled. */
 typedef struct {
     uint8_t precondition_idx;       /* declared precondition this gates (< n_preconditions) */
     uint8_t pin;                    /* apex_activation_gpio_pin_t (Pin 3 / Pin 4) */
@@ -181,9 +231,9 @@ typedef struct {
     uint32_t stable_ms;
 } apex_activation_gpio_binding_t;
 
-/* Binding of a HARDWARE_INPUT trigger source to a discrete GPIO line.  The
- * device fires the trigger when the line reaches its active level.  Debounce
- * and edge-detection behaviour are device-internal. */
+/* Binding of a HARDWARE_INPUT trigger source to a discrete GPIO line. The device
+ * fires the trigger when the line reaches its active level. Debounce and
+ * edge-detection behaviour are device-internal. */
 typedef struct {
     uint8_t trigger_source_idx;  /* declared trigger source this activates (< n_trigger_sources) */
     uint8_t pin;                 /* apex_activation_gpio_pin_t (Pin 3 / Pin 4) */
@@ -192,28 +242,43 @@ typedef struct {
 
 typedef struct {
     uint8_t payload_type_uuid[16];
-    uint8_t class_spec_version;     /* default 0 */
     uint8_t n_preconditions;        /* 0..APEX_ACTIVATION_MAX_PRECONDITIONS */
     uint8_t n_trigger_sources;      /* 1..APEX_ACTIVATION_MAX_TRIGGER_SOURCES */
     uint8_t trigger_source_categories[APEX_ACTIVATION_MAX_TRIGGER_SOURCES];
-    /* Bit i set ⇒ precondition i auto-starts on power-up (transitions to
-     * Running without a host START_PRECONDITION). §4.1 "Auto-start vs.
-     * host-start". */
+    /* Bit i set ⇒ precondition i auto-starts on power-up (transitions to Running
+     * without a host START_PRECONDITION). §4.1 "Auto-start vs. host-start". */
     uint16_t auto_start_mask;
-    /* Optional GPIO-backed preconditions. Each entry binds one precondition to
-     * a discrete-IO line. Requires hooks.gpio_read to be set. At most one
-     * binding per precondition index. */
+    /* Optional GPIO-backed preconditions. Each entry binds one precondition to a
+     * discrete-IO line. Requires hooks.gpio_read. At most one per precondition. */
     uint8_t n_gpio_bindings;        /* 0..APEX_ACTIVATION_MAX_PRECONDITIONS */
     apex_activation_gpio_binding_t gpio_bindings[APEX_ACTIVATION_MAX_PRECONDITIONS];
-    /* Optional GPIO-backed trigger sources.  Parallel to gpio_bindings above
-     * but for HARDWARE_INPUT trigger sources rather than preconditions. */
+    /* Optional GPIO-backed trigger sources. Parallel to gpio_bindings but for
+     * HARDWARE_INPUT trigger sources rather than preconditions. */
     uint8_t n_gpio_trigger_bindings; /* 0..APEX_ACTIVATION_MAX_TRIGGER_SOURCES */
     apex_activation_gpio_trigger_binding_t gpio_trigger_bindings[APEX_ACTIVATION_MAX_TRIGGER_SOURCES];
-    /* Optional per-precondition display info for PRECOND_INFO_REPLY (§6.7-6.8).
-     * Array of n_preconditions entries. NULL = device opts out of PRECOND_INFO. */
-    const apex_activation_precond_info_t *precond_info;
-    /* Initial value of activations_remaining. Use APEX_ACT_ACTIVATIONS_UNLIMITED
-     * for an indefinite count. */
+    /* Optional host-condition bindings (§6.3): declares which preconditions are
+     * host-started against a flight condition and whether they auto-trigger. A
+     * precondition not listed here is device-started by definition; a plain
+     * host-start precondition the host drives by observing NotStarted need not
+     * appear either. Emitted as the CAPABILITY host-condition tail. */
+    uint8_t n_host_conditions;      /* 0..APEX_ACTIVATION_MAX_PRECONDITIONS */
+    apex_activation_host_condition_binding_t host_conditions[APEX_ACTIVATION_MAX_PRECONDITIONS];
+    /* Optional timing tail (§6.3): worst-case ENABLING / DISABLING durations in
+     * milliseconds; 0 = unspecified. The tail is emitted **both-or-neither** and
+     * only when either value is nonzero. Advisory only — it does not change the
+     * transition model (that is decided by the on_enable_begin / on_disable_begin
+     * hooks); it lets the host apply a timeout policy (§7.1). */
+    uint16_t enable_time_ms;
+    uint16_t disable_time_ms;
+    /* Mid-transition reversal capability (§3, §5), device-dependent:
+     *   can_abort_enabling  — SET_DISABLED while ENABLING is honored (→ DISABLING)
+     *                         instead of REJECT_BUSY.
+     *   can_reverse_disabling — SET_ENABLED while DISABLING is honored (→ ENABLING)
+     *                         instead of REJECT_BUSY. */
+    bool can_abort_enabling;
+    bool can_reverse_disabling;
+    /* Initial value of activations_remaining. APEX_ACT_ACTIVATIONS_UNLIMITED for
+     * an indefinite count. */
     uint8_t initial_activations_remaining;
 } apex_activation_device_caps_t;
 
@@ -224,10 +289,10 @@ typedef struct {
 /* Application hooks. Called from apex_activation_device_on_rx() or
  * apex_activation_device_tick() context. */
 typedef struct {
-    /* Optional: called when the host asks to start precondition `idx`. The
-     * application returns APEX_OK to accept (the lib then ACKs ACCEPTED and
-     * sets the precondition to Running), or APEX_ERR_BAD_STATE / similar to
-     * reject. If unset, all START_PRECONDITION commands are accepted. */
+    /* Optional: called when the host asks to start precondition `idx`. Return
+     * APEX_OK to accept (the lib ACKs ACCEPTED and sets the precondition to
+     * Running), or non-APEX_OK to reject with REJECT_PRECONDITION. If unset, all
+     * START_PRECONDITION commands for a declared, non-terminal index are accepted. */
     apex_status_t (*on_start_precondition)(void *user, uint8_t idx);
     void *on_start_precondition_user;
 
@@ -242,11 +307,25 @@ typedef struct {
     void *on_state_change_user;
 
     /* Required when caps.n_gpio_bindings > 0: read the current logic level of a
-     * GPIO line. `pin` is the binding's apex_activation_gpio_pin_t value.
-     * Returns true for logic high, false for logic low. Polled from
+     * GPIO line. Returns true for logic high, false for logic low. Polled from
      * apex_activation_device_tick(). */
     bool (*gpio_read)(void *user, uint8_t pin);
     void *gpio_read_user;
+
+    /* Optional: transition hooks (§3). When on_enable_begin is set the device is
+     * NON-INSTANT for enable: an accepted SET_ENABLED from READY enters ENABLING
+     * and fires this hook; the app performs its enable work and later calls
+     * apex_activation_device_transition_complete() to reach ENABLED (or
+     * apex_activation_device_transition_failed() to fall safely back to READY).
+     * When on_enable_begin is NULL, enable is INSTANT: SET_ENABLED goes directly
+     * READY → ENABLED, exactly as in class version 0. on_disable_begin is the
+     * symmetric hook for the disable transition (ENABLED → DISABLING → READY, or
+     * instant ENABLED → READY when NULL). A device may be instant for one
+     * direction and non-instant for the other. */
+    void (*on_enable_begin)(void *user);
+    void *on_enable_begin_user;
+    void (*on_disable_begin)(void *user);
+    void *on_disable_begin_user;
 } apex_activation_device_hooks_t;
 
 typedef struct apex_activation_device {
@@ -266,17 +345,52 @@ typedef struct apex_activation_device {
     uint32_t last_status_tx_ms;
     bool capability_sent;
     bool status_dirty;                       /* transition happened; flush ASAP */
+    bool self_disarm_pending;                /* §7.4: a session was lost during
+                                              * this arming episode while the state
+                                              * could not yet self-disarm (EXECUTING);
+                                              * disarm on reaching ENABLED. Cleared
+                                              * by a fresh SET_ENABLED. */
     apex_device_link_state_t last_link;
 
-    /* Per-GPIO-binding debounce tracking (parallel to caps.gpio_bindings).
-     * gpio_active_timing[b] is true while the line has been continuously active;
-     * gpio_active_since_ms[b] is the now_ms at which that streak began. */
+    /* Host display real estate learned from HOST_DISPLAY_INFO (§6.7). Defaults
+     * of 32 / 1 apply until a frame is received. */
+    uint8_t host_char_limit;
+    uint8_t host_n_banner_lines;
+
+    /* Per-DISPLAY_TEXT-target rate-cap tracking (§6.6). Index via
+     * dev_display_target_slot(): 0..15 = precondition lines, 16..30 = banner
+     * lines. */
+    bool     display_used[APEX_ACT_DISPLAY_N_TARGETS];
+    uint32_t display_last_ms[APEX_ACT_DISPLAY_N_TARGETS];
+
+    /* Per-GPIO-binding debounce tracking (parallel to caps.gpio_bindings). */
     bool gpio_active_timing[APEX_ACTIVATION_MAX_PRECONDITIONS];
     uint32_t gpio_active_since_ms[APEX_ACTIVATION_MAX_PRECONDITIONS];
+
+    /* Application-owned reenum_permitted hook saved from the core cfg at init
+     * (§7.4 wiring). apex_activation_device_init() installs the class's own
+     * deferral hook on core->cfg — false while EXECUTING — and composes it with
+     * any hook the app had already set: BOTH must permit for the reset to be
+     * honored. */
+    bool (*app_reenum_permitted)(void *user);
+    void *app_reenum_permitted_user;
 } apex_activation_device_t;
 
-/* Initialize. The caller is responsible for wiring this into the core
- * device's on_class_rx callback (forwarding to apex_activation_device_on_rx). */
+/* Initialize. The caller is responsible for wiring this into the core device's
+ * on_class_rx callback (forwarding to apex_activation_device_on_rx).
+ *
+ * Re-enumeration (§7.4): init installs a reenum_permitted hook on the core
+ * device's cfg that DEFERS a host RESET_REQUEST while the class state is
+ * EXECUTING (the action always runs to completion) and permits it from every
+ * other state. An app hook already present on core->cfg is preserved and
+ * composed conservatively — both the class and the app must permit. A session
+ * loss self-issues SET_DISABLE (§7.4): an ENABLED/ENABLING device is stood down
+ * so no successor host inherits an assumed-armed payload, and the resulting
+ * state (DISABLING or, on an instant device, READY) is reported in the first
+ * STATUS after re-discovery, never assumed. All other device-internal state
+ * SURVIVES (latched preconditions, activations_remaining, EXHAUSTED, faults);
+ * only host-session artifacts reset on re-discovery (CAPABILITY re-emits,
+ * display caps revert to 32 / 1). */
 apex_status_t apex_activation_device_init(apex_activation_device_t *act,
                                           apex_device_t *core,
                                           const apex_activation_device_caps_t *caps,
@@ -285,49 +399,74 @@ apex_status_t apex_activation_device_init(apex_activation_device_t *act,
 /* Drive STATUS/CAPABILITY timing and react to core-link transitions. */
 void apex_activation_device_tick(apex_activation_device_t *act, uint32_t now_ms);
 
-/* Pass inbound Activation-class payload (the class_msg_id byte plus body).
- * Wire this into the core device's on_class_rx callback. */
+/* Pass inbound Activation-class payload (the class_msg_id byte plus body). Wire
+ * this into the core device's on_class_rx callback. */
 void apex_activation_device_on_rx(apex_activation_device_t *act,
                                   const uint8_t *payload,
                                   size_t payload_len);
 
-/* Drive a precondition's state directly (used for both auto-start and
- * host-start preconditions once validation is running). */
+/* Drive a precondition's state directly (used for both auto-start and host-start
+ * preconditions once validation is running). */
 void apex_activation_device_set_precondition_state(apex_activation_device_t *act,
                                                    uint8_t idx,
                                                    apex_precond_state_t new_state);
 
 /* Fire a hardware/timer/external trigger. `source_idx` must be a declared
- * trigger source. No effect if not in ENABLED. */
+ * trigger source. No effect unless in ENABLED (§3 — triggers are honored only in
+ * ENABLED, and never once a SET_DISABLED has been accepted). */
 void apex_activation_device_trigger(apex_activation_device_t *act,
                                     uint8_t source_idx);
 
-/* Called by the application when the EXECUTING action has finished. The
- * device decrements activations_remaining and transitions to ENABLED (if
- * more activations remain) or EXHAUSTED (otherwise). */
+/* Called by the application when the EXECUTING action has finished. The device
+ * decrements activations_remaining and transitions to ENABLED (if more
+ * activations remain) or EXHAUSTED (otherwise). */
 void apex_activation_device_complete_execution(apex_activation_device_t *act);
+
+/* Non-instant transition completion (§3). Call from the on_enable_begin /
+ * on_disable_begin path once the enable/disable work is done: ENABLING → ENABLED,
+ * DISABLING → READY. A successful transition clears the self-clearing
+ * TRANSITION_FAILED fault flag. No effect outside ENABLING/DISABLING. */
+void apex_activation_device_transition_complete(apex_activation_device_t *act);
+
+/* Report a transition that failed but left the device in a SAFE condition (§3):
+ * from ENABLING or DISABLING the device returns to READY and sets the
+ * self-clearing TRANSITION_FAILED fault flag (bit 5). A failure that leaves the
+ * device UNSAFE is not this call — use apex_activation_device_set_fault_flag()
+ * with a latched bit to force FAULT. No effect outside ENABLING/DISABLING. */
+void apex_activation_device_transition_failed(apex_activation_device_t *act);
 
 /* Set a fault flag. Latched flags also transition the device to FAULT. */
 void apex_activation_device_set_fault_flag(apex_activation_device_t *act,
                                            uint16_t flag);
 
-/* Clear a self-clearing fault flag (TRIGGER_WINDOW_EXPIRED or COMMS_LOST).
- * Latched flags are not cleared by this function; they require a reset. */
+/* Clear a self-clearing fault flag (TRIGGER_WINDOW_EXPIRED, COMMS_LOST, or
+ * TRANSITION_FAILED). Latched flags are not cleared; they require a reset. */
 void apex_activation_device_clear_fault_flag(apex_activation_device_t *act,
                                              uint16_t flag);
 
-/* Set the payload_specific region of subsequent STATUS frames. Length must
- * be <= APEX_ACTIVATION_PAYLOAD_SPECIFIC_MAX. */
+/* Set the payload_specific region of subsequent STATUS frames. Length must be
+ * <= APEX_ACTIVATION_PAYLOAD_SPECIFIC_MAX. */
 apex_status_t apex_activation_device_set_payload_specific(apex_activation_device_t *act,
                                                           const uint8_t *bytes,
                                                           size_t len);
 
-/* Replace the precond_info array used for PRECOND_INFO_REPLY responses.
- * info must point to at least caps.n_preconditions entries, or be NULL to
- * opt out of PRECOND_INFO entirely. The pointer is stored by reference —
- * the caller must keep the array valid for the device's lifetime. */
-void apex_activation_device_set_precond_info(apex_activation_device_t *act,
-                                             const apex_activation_precond_info_t *info);
+/* Push an advisory DISPLAY_TEXT line (§6.8). `target` is a precondition line
+ * (0x00..0x0F) or a banner line (0xF0..0xFE). `str` is a NUL-terminated ASCII
+ * string; pass NULL or "" to CLEAR the target (text_len = 0). The string is
+ * truncated to the host's char_limit (from HOST_DISPLAY_INFO, default 32).
+ * Latest-wins per target.
+ *
+ * Returns:
+ *   APEX_OK              — frame sent (or cleared).
+ *   APEX_ERR_BAD_STATE   — device not CONNECTED, or the §6.6 5 Hz-per-target
+ *                          rate cap would be exceeded (push rejected; the caller
+ *                          relies on latest-wins and may retry later).
+ *   APEX_ERR_INVALID_ARGS— reserved/invalid target byte.
+ *   APEX_ERR_UNSUPPORTED — banner target but the host declared no banner line
+ *                          for it (n_banner_lines too small / banner unsupported). */
+apex_status_t apex_activation_device_push_text(apex_activation_device_t *act,
+                                               uint8_t target,
+                                               const char *str);
 
 static inline apex_activation_state_t apex_activation_device_state(const apex_activation_device_t *act)
 {
@@ -339,8 +478,7 @@ static inline apex_activation_state_t apex_activation_device_state(const apex_ac
  * ------------------------------------------------------------------------- */
 
 /* Wire-level GPIO mapping declared in the CAPABILITY frame (§6.3): "precondition
- * `precondition_idx` is validated by GPIO `pin`, active at `active_high`". Any
- * debounce interval is device-internal and not carried on the wire. */
+ * `precondition_idx` is validated by GPIO `pin`, active at `active_high`". */
 typedef struct {
     uint8_t precondition_idx;
     uint8_t pin;                    /* apex_activation_gpio_pin_t (3 or 4) */
@@ -354,36 +492,25 @@ typedef struct {
     bool    active_high;
 } apex_activation_gpio_trigger_map_t;
 
-/* Host-condition binding declared in CAPABILITY (§6.3): for a host-started
- * precondition, the flight condition the host evaluates to decide when to send
- * START_PRECONDITION, and whether it fires autonomously. Only host-evaluated
- * preconditions (host_condition != NONE) are carried — device-local/auto-started
- * preconditions need no host action and are omitted. Carried in CAPABILITY (not
- * PRECOND_INFO) so the host's auto-start logic depends only on reliably-delivered
- * frames; a missing PRECOND_INFO_REPLY can no longer stall validation (§6.6). */
 typedef struct {
-    uint8_t  precondition_idx;
-    uint8_t  host_condition;   /* apex_activation_host_condition_t */
-    uint16_t condition_param;
-    uint8_t  auto_trigger;     /* 1 = host fires START_PRECONDITION autonomously when met */
-} apex_activation_host_condition_binding_t;
-
-typedef struct {
-    uint8_t class_spec_version;
     uint8_t payload_type_uuid[16];
     uint8_t n_preconditions;
     uint8_t n_trigger_sources;
     uint8_t trigger_source_categories[APEX_ACTIVATION_MAX_TRIGGER_SOURCES];
     uint8_t n_gpio_bindings;
     apex_activation_gpio_map_t gpio_bindings[APEX_ACTIVATION_MAX_PRECONDITIONS];
-    /* Optional: trigger source GPIO bindings.  0 if the device omitted them. */
+    /* Optional: trigger source GPIO bindings. 0 if the device omitted them. */
     uint8_t n_gpio_trigger_bindings;
     apex_activation_gpio_trigger_map_t gpio_trigger_bindings[APEX_ACTIVATION_MAX_TRIGGER_SOURCES];
     /* Host-condition bindings (§6.3): which preconditions are host-started and
-     * under what flight condition. Indexed 0..n_host_conditions-1, not by
-     * precondition index — each entry names its precondition_idx. */
+     * under what flight condition. Indexed 0..n_host_conditions-1 — each entry
+     * names its own precondition_idx. */
     uint8_t n_host_conditions;
     apex_activation_host_condition_binding_t host_conditions[APEX_ACTIVATION_MAX_PRECONDITIONS];
+    /* Optional timing tail (§6.3). Worst-case ENABLING / DISABLING durations in
+     * milliseconds; 0 = unspecified (also the value when the tail was absent). */
+    uint16_t enable_time_ms;
+    uint16_t disable_time_ms;
 } apex_activation_capability_t;
 
 typedef struct {
@@ -410,30 +537,23 @@ typedef struct {
     void *on_status_user;
     void (*on_ack)(void *user, uint8_t device_id, const apex_activation_ack_t *ack);
     void *on_ack_user;
-    /* Optional: fired when a PRECOND_INFO_REPLY is received. info->str_*
-     * pointers are into the lib frame buffer — valid only during callback. */
-    void (*on_precond_info)(void *user, uint8_t device_id,
-                            uint8_t precondition_idx,
-                            const apex_activation_precond_info_t *info);
-    void *on_precond_info_user;
+    /* Optional: fired on each inbound DISPLAY_TEXT (§6.8). `text` points into the
+     * frame buffer (valid only during the callback; copy to persist) and is NOT
+     * NUL-terminated; `text_len` is its length (0 = the target was cleared).
+     * `target` is the raw target byte (precondition 0x00..0x0F / banner
+     * 0xF0..0xFE). Advisory only — nothing functional may depend on it. */
+    void (*on_display_text)(void *user, uint8_t device_id,
+                            uint8_t target, const char *text, size_t text_len);
+    void *on_display_text_user;
 } apex_activation_host_hooks_t;
 
 typedef struct {
     apex_host_t *core;                                  /* required */
     apex_activation_host_hooks_t hooks;
-    /* Per-device known n_preconditions, captured from CAPABILITY frames. We
-     * need this to parse STATUS frames (which carry per-precondition state
-     * but no count). 0 means "no CAPABILITY seen yet — STATUS unparseable". */
+    /* Per-device known n_preconditions, captured from CAPABILITY frames. Needed
+     * to parse STATUS frames (which carry per-precondition state but no count).
+     * 0 means "no CAPABILITY seen yet — STATUS unparseable". */
     uint8_t n_precond_per_device[256];
-    /* PRECOND_INFO display-string fetch resilience. Each set bit is a
-     * precondition index that has been requested (via
-     * apex_activation_host_request_precond_info) but whose PRECOND_INFO_REPLY
-     * has not yet arrived. The library re-requests every outstanding index on
-     * each STATUS frame until the reply lands, so a dropped reply self-heals
-     * within ~1 s. This is display-only — the functional host_condition /
-     * auto_trigger hint travels in CAPABILITY and never depends on it (§6.6). */
-    uint16_t precond_info_pending[256];
-    uint8_t  precond_info_char_limit;  /* char limit to use for auto re-requests */
 } apex_activation_host_t;
 
 apex_status_t apex_activation_host_init(apex_activation_host_t *h,
@@ -447,15 +567,17 @@ apex_status_t apex_activation_host_set_enabled(apex_activation_host_t *h, uint8_
 apex_status_t apex_activation_host_set_disabled(apex_activation_host_t *h, uint8_t device_id);
 apex_status_t apex_activation_host_trigger(apex_activation_host_t *h, uint8_t device_id);
 
-/* Request per-precondition display strings from a connected device.
- * display_char_limit: max chars the host can render per string (0 = unconstrained,
- * device sends up to APEX_ACT_PRECOND_STR_MAX). Send one call per precondition
- * index after receiving CAPABILITY. The device may silently ignore these. */
-apex_status_t apex_activation_host_request_precond_info(
-    apex_activation_host_t *h,
-    uint8_t device_id,
-    uint8_t precondition_idx,
-    uint8_t display_char_limit);
+/* Send one HOST_DISPLAY_INFO frame (§6.7) declaring the host's display real
+ * estate. The host should send this once, immediately after receiving
+ * CAPABILITY, and may resend it if its display configuration changes.
+ *   char_limit     — max chars rendered per line; 0 is sent verbatim and the
+ *                    device interprets it as 32.
+ *   n_banner_lines — free banner lines available to this device; 0 = banner
+ *                    text unsupported. */
+apex_status_t apex_activation_host_send_display_info(apex_activation_host_t *h,
+                                                     uint8_t device_id,
+                                                     uint8_t char_limit,
+                                                     uint8_t n_banner_lines);
 
 #ifdef __cplusplus
 }

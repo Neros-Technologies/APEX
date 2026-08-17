@@ -1,14 +1,14 @@
-/* Exercises GPIO-backed preconditions (apex_activation_gpio_binding_t).
+/* Exercises GPIO-backed preconditions (apex_activation_gpio_binding_t) and the
+ * class-version-1 rule that no trigger source fires outside ENABLED — including
+ * the new transient ENABLING state.
  *
- * Same loopback harness as test_activation_walkthrough.cc, but the device
- * declares two preconditions, both validated by GPIO lines rather than by the
- * application calling apex_activation_device_set_precondition_state():
+ * Same loopback harness as test_activation_walkthrough.cc. The device declares
+ * two preconditions, both validated by GPIO lines rather than by the application
+ * calling apex_activation_device_set_precondition_state():
  *   - precondition 0: Pin 3, active-high, no debounce, auto-start.
  *   - precondition 1: Pin 4, active-low, 50 ms stable, host-start.
- *
- * The test flips the simulated line levels and asserts the class drives each
- * precondition Running → Valid on its own, honoring auto/host start gating and
- * the debounce window. */
+ * It also declares two trigger sources (HOST_COMMAND + HARDWARE_INPUT) and a
+ * non-instant enable, so the ENABLING state can be observed. */
 #include "apex/apex_activation.h"
 #include "apex/apex_device.h"
 #include "apex/apex_host.h"
@@ -54,6 +54,16 @@ static void on_cap(void* u, uint8_t, const apex_activation_capability_t* c) {
     p->last = *c;
 }
 
+struct AckCapture {
+    int count = 0;
+    apex_activation_ack_t last{};
+};
+static void on_ack(void* u, uint8_t, const apex_activation_ack_t* a) {
+    auto* p = static_cast<AckCapture*>(u);
+    p->count++;
+    p->last = *a;
+}
+
 // Simulated GPIO lines, indexed by connector pin number.
 struct GpioLines {
     bool level[16] = {false};
@@ -71,8 +81,16 @@ protected:
     apex_activation_device_t act_dev{};
     StatusCapture status{};
     CapCapture cap{};
+    AckCapture ack{};
     GpioLines lines{};
+    apex_activation_device_caps_t caps_{};
+    apex_activation_device_hooks_t dh_{};
+    bool enable_began = false;
     uint32_t now_ms = 0;
+
+    static void on_enable_begin_cb(void* u) {
+        static_cast<ActivationGpio*>(u)->enable_began = true;
+    }
 
     static void dev_class_rx_trampoline(void* u, const uint8_t* p, size_t n) {
         apex_activation_device_on_rx(static_cast<apex_activation_device_t*>(u), p, n);
@@ -89,6 +107,7 @@ protected:
         apex_activation_host_hooks_t hh{};
         hh.on_status = on_status; hh.on_status_user = &status;
         hh.on_capability = on_cap; hh.on_capability_user = &cap;
+        hh.on_ack = on_ack; hh.on_ack_user = &ack;
         ASSERT_EQ(APEX_OK, apex_activation_host_init(&act_host, &host, &hh));
 
         apex_device_cfg_t dc{};
@@ -100,24 +119,22 @@ protected:
         dc.on_class_rx_user = &act_dev;
         apex_device_init(&dev_core, &dc);
 
-        apex_activation_device_caps_t caps{};
-        caps.class_spec_version = 0;
-        caps.n_preconditions = 2;
-        caps.n_trigger_sources = 1;
-        caps.trigger_source_categories[0] = APEX_TRIGGER_HOST_COMMAND;
-        caps.auto_start_mask = (1u << 0);   // precondition 0 auto-starts
-        caps.initial_activations_remaining = 1;
+        caps_.n_preconditions = 2;
+        caps_.n_trigger_sources = 2;
+        caps_.trigger_source_categories[0] = APEX_TRIGGER_HOST_COMMAND;
+        caps_.trigger_source_categories[1] = APEX_TRIGGER_HARDWARE_INPUT;
+        caps_.auto_start_mask = (1u << 0);   // precondition 0 auto-starts
+        caps_.initial_activations_remaining = 1;
         // precondition 0: Pin 3, active-high, no debounce.
-        caps.gpio_bindings[0] = {0, APEX_ACTIVATION_GPIO_PIN3, true, 0};
+        caps_.gpio_bindings[0] = {0, APEX_ACTIVATION_GPIO_PIN3, true, 0};
         // precondition 1: Pin 4, active-low, must be stable 50 ms.
-        caps.gpio_bindings[1] = {1, APEX_ACTIVATION_GPIO_PIN4, false, 50};
-        caps.n_gpio_bindings = 2;
-
-        apex_activation_device_hooks_t dh{};
-        dh.gpio_read = gpio_read_cb;
-        dh.gpio_read_user = &lines;
+        caps_.gpio_bindings[1] = {1, APEX_ACTIVATION_GPIO_PIN4, false, 50};
+        caps_.n_gpio_bindings = 2;
+        // Non-instant enable so ENABLING can be observed.
+        dh_.gpio_read = gpio_read_cb; dh_.gpio_read_user = &lines;
+        dh_.on_enable_begin = on_enable_begin_cb; dh_.on_enable_begin_user = this;
         ASSERT_EQ(APEX_OK,
-                  apex_activation_device_init(&act_dev, &dev_core, &caps, &dh));
+                  apex_activation_device_init(&act_dev, &dev_core, &caps_, &dh_));
     }
 
     void Pump(uint32_t advance_ms = 0, int rounds = 1) {
@@ -137,6 +154,18 @@ protected:
         }
     }
     void PumpUntilQuiet(int rounds = 16) { for (int i = 0; i < rounds; i++) Pump(1); }
+
+    // Drive both GPIO preconditions to Valid, leaving the device in READY.
+    void DriveToReady() {
+        lines.level[APEX_ACTIVATION_GPIO_PIN3] = true;   // precond 0 active-high
+        Pump(1);
+        uint8_t dev_id = apex_device_get_id(&dev_core);
+        (void)apex_activation_host_start_precondition(&act_host, dev_id, 1);
+        PumpUntilQuiet();
+        lines.level[APEX_ACTIVATION_GPIO_PIN4] = false;  // precond 1 active-low
+        Pump(60);
+        PumpUntilQuiet();
+    }
 };
 
 // Precondition rejects init with a binding to an undeclared precondition.
@@ -168,8 +197,8 @@ TEST_F(ActivationGpio, InitRequiresGpioReadHook) {
               apex_activation_device_init(&bad, &dev_core, &caps, &dh));
 }
 
-// The CAPABILITY frame declares which precondition each GPIO line validates,
-// and the host learns the mapping during discovery.
+// The CAPABILITY frame declares which precondition each GPIO line validates, and
+// the host learns the mapping during discovery.
 TEST_F(ActivationGpio, CapabilityDeclaresGpioMapping) {
     PumpUntilQuiet();
     ASSERT_EQ(1, cap.count);
@@ -197,11 +226,9 @@ TEST_F(ActivationGpio, GpioDrivesPreconditionsToReady) {
     lines.level[APEX_ACTIVATION_GPIO_PIN3] = true;
     Pump(1);
     EXPECT_EQ(APEX_PRECOND_VALID, status.last.precondition_states[0]);
-    // Still VALIDATING — precondition 1 has not started.
     EXPECT_EQ(APEX_ACTIVATION_STATE_VALIDATING, status.last.state);
 
-    // Pin 4 is already low (its active level), but precondition 1 is NotStarted,
-    // so it must not validate yet.
+    // Pin 4 is already low (its active level), but precondition 1 is NotStarted.
     PumpUntilQuiet();
     EXPECT_EQ(APEX_PRECOND_NOT_STARTED, status.last.precondition_states[1]);
 
@@ -211,8 +238,7 @@ TEST_F(ActivationGpio, GpioDrivesPreconditionsToReady) {
     PumpUntilQuiet();
     EXPECT_EQ(APEX_PRECOND_RUNNING, status.last.precondition_states[1]);
 
-    // Pin 4 low = active. It must hold for 50 ms before latching. Advancing only
-    // 20 ms is not enough.
+    // Pin 4 low = active. It must hold 50 ms before latching. 20 ms is not enough.
     Pump(20);
     EXPECT_EQ(APEX_PRECOND_RUNNING, status.last.precondition_states[1]);
 
@@ -223,11 +249,46 @@ TEST_F(ActivationGpio, GpioDrivesPreconditionsToReady) {
     Pump(20);
     EXPECT_EQ(APEX_PRECOND_RUNNING, status.last.precondition_states[1]);
 
-    // Hold active past the 50 ms window → Valid, and all preconditions are now
-    // Valid so the device advances to READY.
+    // Hold active past the 50 ms window → Valid → READY (renumbered 0x03).
     Pump(60);
     EXPECT_EQ(APEX_PRECOND_VALID, status.last.precondition_states[1]);
     EXPECT_EQ(APEX_ACTIVATION_STATE_READY, status.last.state);
+}
+
+// A hardware/GPIO trigger source must NOT fire while the device is in the
+// transient ENABLING state (§3): neither an internal source nor the host TRIGGER
+// command. Once the enable completes (ENABLED) the trigger is honored.
+TEST_F(ActivationGpio, GpioTriggerDoesNotFireDuringEnabling) {
+    PumpUntilQuiet();
+    uint8_t dev_id = apex_device_get_id(&dev_core);
+    DriveToReady();
+    ASSERT_EQ(APEX_ACTIVATION_STATE_READY, status.last.state);
+
+    // Enable → non-instant → ENABLING.
+    ASSERT_EQ(APEX_OK, apex_activation_host_set_enabled(&act_host, dev_id));
+    PumpUntilQuiet();
+    ASSERT_EQ(APEX_ACTIVATION_STATE_ENABLING, status.last.state);
+    ASSERT_TRUE(enable_began);
+
+    // Internal HARDWARE_INPUT source (index 1) during ENABLING → ignored.
+    apex_activation_device_trigger(&act_dev, 1);
+    EXPECT_EQ(APEX_ACTIVATION_STATE_ENABLING, apex_activation_device_state(&act_dev));
+
+    // Host TRIGGER during ENABLING → REJECT_WRONG_STATE.
+    ASSERT_EQ(APEX_OK, apex_activation_host_trigger(&act_host, dev_id));
+    PumpUntilQuiet();
+    EXPECT_EQ(APEX_ACT_CMD_TRIGGER, ack.last.acked_command);
+    EXPECT_EQ(APEX_ACT_REJECT_WRONG_STATE, ack.last.result);
+    EXPECT_EQ(APEX_ACTIVATION_STATE_ENABLING, apex_activation_device_state(&act_dev));
+
+    // Complete the enable; now the same hardware trigger fires.
+    apex_activation_device_transition_complete(&act_dev);
+    PumpUntilQuiet();
+    ASSERT_EQ(APEX_ACTIVATION_STATE_ENABLED, status.last.state);
+    apex_activation_device_trigger(&act_dev, 1);
+    EXPECT_EQ(APEX_ACTIVATION_STATE_EXECUTING, apex_activation_device_state(&act_dev));
+    PumpUntilQuiet();
+    EXPECT_EQ(1, status.last.last_trigger_source);  // HARDWARE_INPUT source index
 }
 
 }  // namespace

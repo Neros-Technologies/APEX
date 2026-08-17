@@ -2,7 +2,7 @@
 
 **APEX — Adaptive Payload EXchange**
 
-**Status:** Draft | **Scope:** Repeater device class ([`traffic_type = 4`](APEX_Device_Classes.md#2--registry))
+**Status:** Draft | **Scope:** Repeater device class ([`traffic_type = 5`](APEX_Device_Classes.md#2--registry))
 
 ---
 
@@ -18,6 +18,8 @@ A Repeater-class Device typically carries:
 - **Antenna list with per-antenna pointing** (optional) — the device may expose a lightweight, positionally-indexed inventory of its physical antennas ([§3.2](#3-2--antenna-list)). Each RF link (C2 or video) names the antenna it uses, so different links can be on different antennas — or share one. When an antenna is directional, the device reports per-antenna RF-derived bearing and distance to the distal drone; when an antenna is physically aimable, the Host can aim that specific antenna with `ANTENNA_CMD`. The earlier "single shared assembly" device is simply the degenerate case of an antenna list of length one with every link mapped to antenna `0`.
 
 **The repeater manages its own RF configuration.** Frequencies, bind phrases, packet rates, link protocol, and other radio parameters are provisioned through a separate interface outside of APEX. The APEX channel between the Host (carrier drone) and the Device (repeater) serves two purposes: the Host observes the repeater's current configuration and live RF metrics, and the Host can update selected parameters at runtime.
+
+This document defines **class version 1** of the Repeater class; the class version in force for a session is negotiated at discovery — see [APEX — Core](APEX_Core.md).
 
 ---
 
@@ -112,7 +114,7 @@ Operational sub-states — whether a C2 link currently has an active distal conn
 <a id="5--lifecycle" name="5--lifecycle"></a>
 ## 5.  Lifecycle
 
-1. **Discovery.** The Device completes the core discovery handshake (Core [§3.3](APEX_Core.md#3-3--startup-discovery-handshake)) requesting `device_class_req = 4`. On `ACK_OK`, class traffic on `traffic_type = 4` becomes valid.
+1. **Discovery.** The Device completes the core discovery handshake (Core [§3.3](APEX_Core.md#3-3--startup-discovery-handshake)) requesting `device_class_req = 5`. On `ACK_OK`, class traffic on `traffic_type = 5` becomes valid.
 2. **Telemetry begins.** The Device immediately starts sending `TELEMETRY` frames at ≥ 1 Hz. These satisfy the Core [§3.5](APEX_Core.md#3-5--heartbeat) 1 Hz transmit floor.
 3. **Host requests config.** The Host sends `GET_CONFIG`; the Device replies with `CONFIG_REPORT`.
 4. **Distal TLM forwarding.** Whenever the Device receives telemetry from the distal drone over a C2 link it forwards it as `DISTAL_TLM` frames, subject to the policy in [§7](#7--distal-tlm-forwarding-policy).
@@ -124,7 +126,7 @@ Operational sub-states — whether a C2 link currently has an active distal conn
 <a id="6--message-format" name="6--message-format"></a>
 ## 6.  Message Format
 
-The class follows the APEX framing model (Core [§3](APEX_Core.md#3--communication-protocol-uart)): every frame carries `traffic_type = 4`, is COBS-framed, and uses the outer header from Core [§3.1.1](APEX_Core.md#3-1-1--outer-header-apexv0hdr_t). All multi-byte fields are little-endian (Core [§3.1](APEX_Core.md#3-1--frame-layout)).
+The class follows the APEX framing model (Core [§3](APEX_Core.md#3--communication-protocol-uart)): every frame carries `traffic_type = 5`, is COBS-framed, and uses the outer header from Core [§3.1.1](APEX_Core.md#3-1-1--outer-header-apexhdr_t). All multi-byte fields are little-endian (Core [§3.1](APEX_Core.md#3-1--frame-layout)).
 
 **`class_msg_id` assignments:**
 
@@ -410,12 +412,12 @@ A dual-band, mixed-protocol repeater with video and **two antennas** — a steer
   - `antenna_id = 1` — **passive DOA** (`antenna_type = 0x01`), a fixed video patch with bearing sensing. **The video link uses it** (`antenna_id = 1`).
   - Both report bearings against magnetic north. This is the per-antenna case: the C2 dish is steerable while the video antenna is only sensed, and the Host aims them independently by `antenna_id`.
 - Distal TLM forwarding: **20 Hz** default.
-- Assigned `device_id = 0x01`.
+- Assigned `device_id = 0x02`.
 
 <a id="8-3--frame-notation" name="8-3--frame-notation"></a>
 ### 8.3.  Frame notation
 
-Each frame is shown as bytes before CRC and COBS (Core [§3.1](APEX_Core.md#3-1--frame-layout)). `PV = 00`, `TT = 04`, `ID = 01` throughout.
+Each frame is shown as bytes before CRC and COBS (Core [§3.1](APEX_Core.md#3-1--frame-layout)). `PV = 01`, `TT = 05`, `ID = 02` throughout.
 
 <a id="8-4--sequence" name="8-4--sequence"></a>
 ### 8.4.  Sequence
@@ -424,7 +426,7 @@ Each frame is shown as bytes before CRC and COBS (Core [§3.1](APEX_Core.md#3-1-
 sequenceDiagram
     participant H as Host (carrier drone)
     participant D as Device (repeater)
-    Note over H,D: Core discovery complete, traffic_type 4 active.
+    Note over H,D: Core discovery complete, traffic_type 5 active.
     D->>H: Step 1 — TELEMETRY (ACTIVE, no distal link yet)
     H->>D: Step 2 — GET_CONFIG
     D->>H: Step 2 — CONFIG_REPORT (full config snapshot)
@@ -448,12 +450,12 @@ sequenceDiagram
 The Device sends its first `TELEMETRY` frame. No distal drone is connected; C2 links are scanning, video has no signal, and neither antenna has a fix. With two antennas the frame carries an `antenna_count` of `02` followed by two 7-byte directionality blocks. Inner payload 33 bytes (`LN = 21`).
 
 ```
-00 04 01 21    01 01 33 C4 5A 0F 1B 01 BA 55 0A 1E 01 80 00 00 00 00 02 FF FF FF FF FF FF 00 FF FF FF FF FF FF 00
+01 05 02 21    01 01 33 C4 5A 0F 1B 01 BA 55 0A 1E 01 80 00 00 00 00 02 FF FF FF FF FF FF 00 FF FF FF FF FF FF 00
 ```
 
 | Byte(s) | Hex | Field | Value |
 | --- | --- | --- | --- |
-| 0–3 | `00 04 01 21` | outer header | `PV=00`, `TT=04`, `ID=01`, `LN=33` |
+| 0–3 | `01 05 02 21` | outer header | `PV=01`, `TT=05`, `ID=02`, `LN=33` |
 | 4 | `01` | `class_msg_id` | `1` (TELEMETRY) |
 | 5 | `01` | `device_state` | ACTIVE |
 | 6 | `33` | `capability_flags` | bits 0, 1, 4, 5 |
@@ -469,13 +471,13 @@ The Device sends its first `TELEMETRY` frame. No distal drone is connected; C2 l
 `GET_CONFIG` inner payload 1 byte (`LN = 01`).
 
 ```
-00 04 01 01    05
+01 05 02 01    05
 ```
 
 `CONFIG_REPORT` reply. C2 config blobs are 4-byte illustrative placeholders. Because the antenna list is present (bit 5), each C2 link section ends with an `antenna_id`, the video section ends with an `antenna_id`, and an antenna-list section sits between the video and global sections. The video section carries center + bandwidth per direction. Inner payload 37 bytes (`LN = 25`).
 
 ```
-00 04 01 25    03 33 00 00 04 C8 00 01 0A 00 01 00 04 03 00 01 05 00 B0 16 14 00 00 D0 16 14 00 1C 00 01 02 02 00 01 00 00 14
+01 05 02 25    03 33 00 00 04 C8 00 01 0A 00 01 00 04 03 00 01 05 00 B0 16 14 00 00 D0 16 14 00 1C 00 01 02 02 00 01 00 00 14
 ```
 
 | Byte(s) | Hex | Field | Value |
@@ -513,7 +515,7 @@ The Device sends its first `TELEMETRY` frame. No distal drone is connected; C2 l
 Both C2 links are relaying; video is flowing. The two antennas now report **independently**: the aimable C2 dish (antenna 0) is gimballed to **130°** and has a distal-drone fix at **135° / 2800 m / 85%**, while the passive video patch (antenna 1) — which cannot be aimed, so reports `0xFFFF` for its own bearing — has its own DOA fix at **137° / 2810 m / 70%**. Inner payload still 33 bytes.
 
 ```
-00 04 01 21    01 01 33 C4 5C 0F 1B 03 BA 55 0A 1E 03 D3 62 19 1C 03 02 82 00 87 00 F0 0A 55 FF FF 89 00 FA 0A 46
+01 05 02 21    01 01 33 C4 5C 0F 1B 03 BA 55 0A 1E 03 D3 62 19 1C 03 02 82 00 87 00 F0 0A 55 FF FF 89 00 FA 0A 46
 ```
 
 Link-block changes from Step 1: byte 8 (C2-0 LQ 90→92 `5A`→`5C`), byte 11 (C2-0 `flags` → `rx_active+tx_active` `01`→`03`), byte 15 (C2-1 `flags` `01`→`03`), and the video block at bytes 17–21 (`80 00 00 00 00` → `D3 62 19 1C 03`: RSSI −45 dBm, LQ 98%, SNR 25 dB, TX 28 dBm, `rx_active+tx_active`). The per-antenna directionality blocks change as follows:
@@ -535,7 +537,7 @@ Link-block changes from Step 1: byte 8 (C2-0 LQ 90→92 `5A`→`5C`), byte 11 (C
 The distal drone sent a CRSF battery frame (12.6 V, 15.3 A, 800 mAh, 60% remaining) over C2 link 0. Forwarded verbatim, tagged CRSF. Inner payload 14 bytes (`LN = 0E`).
 
 ```
-00 04 01 0E    02 00 00 C8 09 08 00 7E 00 99 00 03 20 3C
+01 05 02 0E    02 00 00 C8 09 08 00 7E 00 99 00 03 20 3C
 ```
 
 | Byte(s) | Hex | Field | Value |
@@ -552,7 +554,7 @@ Seeing `c2_protocol = 0x00`, the Host routes these bytes to its CRSF parser, whi
 The distal drone on link 1 sent a MAVLink 2 `HEARTBEAT` (msgid 0). Forwarded verbatim, tagged MAVLink. Inner payload 24 bytes (`LN = 18`).
 
 ```
-00 04 01 18    02 01 01 FD 09 00 00 00 01 01 00 00 00 00 00 00 00 02 03 51 04 03 E7 9B
+01 05 02 18    02 01 01 FD 09 00 00 00 01 01 00 00 00 00 00 00 00 02 03 51 04 03 E7 9B
 ```
 
 | Byte(s) | Hex | Field | Value |
@@ -569,7 +571,7 @@ Seeing `c2_protocol = 0x01`, the Host routes these bytes to its MAVLink parser i
 `update_mask = 0x10` (bit 4 = video TX only). The TX section carries center + bandwidth + power + format. Inner payload 8 bytes (`LN = 08`).
 
 ```
-00 04 01 08    06 10 D0 16 14 00 18 00
+01 05 02 08    06 10 D0 16 14 00 18 00
 ```
 
 | Byte(s) | Hex | Field | Value |
@@ -584,7 +586,7 @@ Seeing `c2_protocol = 0x01`, the Host routes these bytes to its MAVLink parser i
 ACK (inner payload 4 bytes):
 
 ```
-00 04 01 04    04 06 00 FF
+01 05 02 04    04 06 00 FF
 ```
 
 #### ▸ Step 6 — Host aims antenna 0 to 135°
@@ -592,7 +594,7 @@ ACK (inner payload 4 bytes):
 The Host steers the C2 dish (antenna 0, the aimable one) to point at the distal drone's derived bearing. `ANTENNA_CMD` names the `antenna_id`. Inner payload 4 bytes (`LN = 04`).
 
 ```
-00 04 01 04    07 00 87 00
+01 05 02 04    07 00 87 00
 ```
 
 | Byte(s) | Hex | Field | Value |
@@ -604,7 +606,7 @@ The Host steers the C2 dish (antenna 0, the aimable one) to point at the distal 
 The Device accepts — antenna 0's `antenna_type` is `0x02` (aimable). ACK:
 
 ```
-00 04 01 04    04 07 00 FF
+01 05 02 04    04 07 00 FF
 ```
 
 Had the Host instead named `antenna_id = 1` (the passive DOA patch), the Device would reply `04 07 03 FF` (`REJECT_WRONG_STATE`), and `antenna_id = 2` or higher would draw `04 07 01 FF` (`REJECT_INVALID_VALUE`).
@@ -614,7 +616,7 @@ Had the Host instead named `antenna_id = 1` (the passive DOA patch), the Device 
 Host sends `GET_CONFIG` (same frame as Step 2). **One byte changes** in the `CONFIG_REPORT`: byte 31 (`video_tx_power_dbm`) goes `1C` → `18` (28 → 24 dBm).
 
 ```
-00 04 01 25    03 33 00 00 04 C8 00 01 0A 00 01 00 04 03 00 01 05 00 B0 16 14 00 00 D0 16 14 00 18 00 01 02 02 00 01 00 00 14
+01 05 02 25    03 33 00 00 04 C8 00 01 0A 00 01 00 04 03 00 01 05 00 B0 16 14 00 00 D0 16 14 00 18 00 01 02 02 00 01 00 00 14
                                                                                                 ^^
 ```
 

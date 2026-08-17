@@ -20,12 +20,14 @@ static apex_status_t dev_send(apex_hmi_device_t *d,
 
 static void dev_send_capability(apex_hmi_device_t *d)
 {
-    uint8_t buf[5];
+    /* §4.3: class_msg_id, supported_control_formats, supported_cvbs_modes,
+     * intended_rate_hz — 4 bytes total. No class_spec_version byte in v1: the
+     * class version is negotiated at discovery (Core), not carried here. */
+    uint8_t buf[4];
     buf[0] = APEX_HMI_MSG_CAPABILITY;
-    buf[1] = d->caps.class_spec_version;
-    buf[2] = d->caps.supported_control_formats;
-    buf[3] = d->caps.supported_cvbs_modes;
-    buf[4] = d->caps.intended_rate_hz;
+    buf[1] = d->caps.supported_control_formats;
+    buf[2] = d->caps.supported_cvbs_modes;
+    buf[3] = d->caps.intended_rate_hz;
     if (dev_send(d, buf, sizeof(buf)) == APEX_OK) {
         d->capability_sent = true;
         d->capability_tx_ms = d->now_ms;
@@ -239,13 +241,13 @@ static void host_send_config(apex_hmi_host_t *h, uint8_t device_id,
 static void host_handle_capability(apex_hmi_host_t *h, uint8_t device_id,
                                    const uint8_t *body, size_t body_len)
 {
-    /* class_spec_version(1) + supported_formats(1) + supported_cvbs(1) +
-     * intended_rate(1) = 4 bytes. */
-    if (body_len < 4) return;
-    /* We don't act on class_spec_version in v1; forward fields we know. */
-    uint8_t dev_formats = body[1];
-    uint8_t dev_cvbs    = body[2];
-    uint8_t rate        = body[3];
+    /* §4.3: supported_formats(1) + supported_cvbs(1) + intended_rate(1) =
+     * 3 body bytes (class_msg_id already stripped by the caller). No
+     * class_spec_version byte in v1. */
+    if (body_len < 3) return;
+    uint8_t dev_formats = body[0];
+    uint8_t dev_cvbs    = body[1];
+    uint8_t rate        = body[2];
 
     if (h->hooks.on_capability) {
         h->hooks.on_capability(h->hooks.on_capability_user, device_id,

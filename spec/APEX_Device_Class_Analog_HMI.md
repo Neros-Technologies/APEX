@@ -2,7 +2,7 @@
 
 **APEX — Adaptive Payload EXchange**
 
-**Status:** Draft | **Scope:** Analog HMI device class ([`traffic_type = 2`](APEX_Device_Classes.md#2--registry))
+**Status:** Draft | **Scope:** Analog HMI device class ([`traffic_type = 3`](APEX_Device_Classes.md#2--registry))
 
 ---
 
@@ -41,13 +41,17 @@ subsystem. What this class **does** define is:
 - Mid-session reconfiguration of the format or CVBS mode. The session locks
   both at config time; changing either requires a Device reset.
 - Class-layer fragmentation. Inner payloads carry one complete control frame
-  per APEX frame. MAVLink 2 frames longer than `APEX_V0_MAX_PAYLOAD_LENGTH − 1`
+  per APEX frame. MAVLink 2 frames longer than `APEX_MAX_PAYLOAD_LENGTH − 1`
   bytes (~252 bytes after the `class_msg_id`) cannot be transported in v1.
 
 This document covers **both sides** of the class — Device role and Host role.
 Discovery, framing, and capability exchange at the bus level are out of scope
-and are handled by Core. All frames in this class carry `traffic_type = 2` in
-the APEX V0 outer header.
+and are handled by Core. All frames in this class carry `traffic_type = 3` in
+the APEX v1 outer header.
+
+This document defines **class version 1** of the Analog HMI class; the class
+version in force for a session is negotiated at discovery — see
+[APEX — Core](APEX_Core.md).
 
 CVBS itself is electrical; the bytes that select CVBS mode flow through this
 spec, but no video bytes do.
@@ -126,8 +130,8 @@ receiving and decoding whatever CVBS waveform the Host drives.
 ## 4.  Message Format
 
 The class follows the APEX framing model ([APEX — Core §3](APEX_Core.md#3--communication-protocol-uart)):
-every frame carries `traffic_type = 2`, is COBS-framed, and uses the outer
-header from [APEX — Core §3.1.1](APEX_Core.md#3-1-1--outer-header-apexv0hdr_t),
+every frame carries `traffic_type = 3`, is COBS-framed, and uses the outer
+header from [APEX — Core §3.1.1](APEX_Core.md#3-1-1--outer-header-apexhdr_t),
 with the inner payload carrying class-specific content. All multi-byte fields
 are little-endian ([APEX — Core §3.1](APEX_Core.md#3-1--frame-layout)).
 
@@ -145,7 +149,7 @@ are little-endian ([APEX — Core §3.1](APEX_Core.md#3-1--frame-layout)).
 <a id="4-2--lifecycle-overview" name="4-2--lifecycle-overview"></a>
 ### 4.2.  Lifecycle overview
 
-1. Core discovery completes for `device_class_req = 2` ([APEX — Core §3.3](APEX_Core.md#3-3--startup-discovery-handshake)). Class traffic on `traffic_type = 2` becomes valid.
+1. Core discovery completes for `device_class_req = 3` ([APEX — Core §3.3](APEX_Core.md#3-3--startup-discovery-handshake)). Class traffic on `traffic_type = 3` becomes valid.
 2. Device immediately emits **CAPABILITY** ([§4.3](#4-3--capability-frame-device--host)) — unprompted, exactly once.
 3. Host emits **CONFIG** ([§4.4](#4-4--config-frame-host--device)) with the chosen format and CVBS mode.
 4. Device replies **ACK** ([§4.5](#4-5--ack-frame-device--host)). On `ACCEPTED`, the session enters ACTIVE.
@@ -157,18 +161,17 @@ are little-endian ([APEX — Core §3.1](APEX_Core.md#3-1--frame-layout)).
 | Offset | Field | Width | Description |
 | --- | --- | --- | --- |
 | `0` | `class_msg_id` | `u8` | `1` (CAPABILITY). |
-| `1` | `class_spec_version` | `u8` | Analog-HMI-class revision the Device implements. `0` = the revision defined by this document. |
-| `2` | `supported_control_formats` | `u8` | Bitmask of supported control formats. Bit `n` set ⇒ format value `n` ([§3.1](#3-1--control-packet-format)) is supported. At least one bit MUST be set. |
-| `3` | `supported_cvbs_modes` | `u8` | Bitmask of supported CVBS modes. Bit `n` set ⇒ CVBS mode value `n` ([§3.2](#3-2--cvbs-pin-mode)) is supported. May be `0x00` if the Device does not consume CVBS (e.g. headless HMI). |
-| `4` | `intended_rate_hz` | `u8` | The Device's intended CONTROL_DATA transmit rate, in Hz. Informational; the Host MAY use it to size buffers but MUST NOT enforce it. `0` = unspecified / event-driven. |
+| `1` | `supported_control_formats` | `u8` | Bitmask of supported control formats. Bit `n` set ⇒ format value `n` ([§3.1](#3-1--control-packet-format)) is supported. At least one bit MUST be set. |
+| `2` | `supported_cvbs_modes` | `u8` | Bitmask of supported CVBS modes. Bit `n` set ⇒ CVBS mode value `n` ([§3.2](#3-2--cvbs-pin-mode)) is supported. May be `0x00` if the Device does not consume CVBS (e.g. headless HMI). |
+| `3` | `intended_rate_hz` | `u8` | The Device's intended CONTROL_DATA transmit rate, in Hz. Informational; the Host MAY use it to size buffers but MUST NOT enforce it. `0` = unspecified / event-driven. |
 
 `supported_control_formats == 0` is malformed; the Host MUST reject with
 `REJECT_MALFORMED` ([§4.5](#4-5--ack-frame-device--host)).
 
-A `class_spec_version` value the Host does not understand should be treated
-as `0` — the Host parses the fields it knows. Future revisions of this spec
-will extend CAPABILITY only by appending fields, never by repurposing
-existing ones.
+CAPABILITY carries no version byte: the layout in force is governed by the
+class version negotiated at discovery ([APEX — Core](APEX_Core.md)).
+Compatible revisions of this spec will extend CAPABILITY only by appending
+fields, never by repurposing existing ones.
 
 <a id="4-4--config-frame-host--device" name="4-4--config-frame-host--device"></a>
 ### 4.4.  CONFIG frame (Host → Device)
@@ -273,7 +276,7 @@ everything else it needs.
 ### 5.1.  MAVLink 2 frame size
 
 A MAVLink 2 frame can be up to 280 bytes (10 B header + 255 B payload + 2 B
-CRC + 13 B signature). The APEX V0 inner-payload cap is **255** bytes, of
+CRC + 13 B signature). The APEX v1 inner-payload cap is **255** bytes, of
 which the CONTROL_DATA `class_msg_id` consumes one — leaving **254** bytes
 for the wrapped MAVLink frame.
 
@@ -306,14 +309,14 @@ streaming at 50 Hz.
 - Supports **CRSF only** (`supported_control_formats = 0x01`).
 - Supports **single-ended CVBS only** (`supported_cvbs_modes = 0x01`).
 - Streams at **50 Hz** (`intended_rate_hz = 50`, `0x32`).
-- Has completed Core discovery and been assigned `device_id = 0x01`.
+- Has completed Core discovery and been assigned `device_id = 0x02`.
 
 <a id="6-2--frame-notation" name="6-2--frame-notation"></a>
 ### 6.2.  Frame notation
 
 Frames below use the common notation defined in Core [§3.1.5](APEX_Core.md#3-1-5--frame-notation):
-each is shown as the bytes before CRC and COBS. `PV = 00`, `TT = 02`,
-`ID = 01` throughout.
+each is shown as the bytes before CRC and COBS. `PV = 01`, `TT = 03`,
+`ID = 02` throughout.
 
 <a id="6-3--sequence" name="6-3--sequence"></a>
 ### 6.3.  Sequence
@@ -334,27 +337,26 @@ sequenceDiagram
 
 #### ▸ Step 1 — Device emits CAPABILITY
 
-Inner payload 5 bytes (`LN = 05`).
+Inner payload 4 bytes (`LN = 04`).
 
 ```
-00 02 01 05    01 00 01 01 32
+01 03 02 04    01 01 01 32
 ```
 
 | Byte(s) | Hex | Field | Value |
 | --- | --- | --- | --- |
-| 0–3 | `00 02 01 05` | outer header | `LN=05` (5) |
+| 0–3 | `01 03 02 04` | outer header | `LN=04` (4) |
 | 4 | `01` | `class_msg_id` | `1` (CAPABILITY) |
-| 5 | `00` | `class_spec_version` | `0` |
-| 6 | `01` | `supported_control_formats` | bit 0 = CRSF |
-| 7 | `01` | `supported_cvbs_modes` | bit 0 = SINGLE_ENDED |
-| 8 | `32` | `intended_rate_hz` | `50` |
+| 5 | `01` | `supported_control_formats` | bit 0 = CRSF |
+| 6 | `01` | `supported_cvbs_modes` | bit 0 = SINGLE_ENDED |
+| 7 | `32` | `intended_rate_hz` | `50` |
 
 #### ▸ Step 2 — Host emits CONFIG
 
 Inner payload 3 bytes (`LN = 03`).
 
 ```
-00 02 01 03    02 00 00
+01 03 02 03    02 00 00
 ```
 
 | Byte(s) | Hex | Field | Value |
@@ -368,7 +370,7 @@ Inner payload 3 bytes (`LN = 03`).
 Inner payload 2 bytes (`LN = 02`).
 
 ```
-00 02 01 02    03 00
+01 03 02 02    03 00
 ```
 
 | Byte(s) | Hex | Field | Value |
@@ -383,7 +385,7 @@ The Device transitions WAITING_CONFIG → ACTIVE and begins streaming.
 A CRSF channels-packed frame (26 bytes). Inner payload 27 bytes (`LN = 1B`).
 
 ```
-00 02 01 1B    04 <26 bytes of CRSF frame ...>
+01 03 02 1B    04 <26 bytes of CRSF frame ...>
 ```
 
 | Byte(s) | Hex | Field | Value |
@@ -396,7 +398,7 @@ A CRSF channels-packed frame (26 bytes). Inner payload 27 bytes (`LN = 1B`).
 A CRSF battery-telemetry frame (10 bytes). Inner payload 11 bytes (`LN = 0B`).
 
 ```
-00 02 01 0B    04 <10 bytes of CRSF telemetry frame ...>
+01 03 02 0B    04 <10 bytes of CRSF telemetry frame ...>
 ```
 
 Identical structure to Step 4; only the direction and content differ.

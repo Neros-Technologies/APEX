@@ -2,7 +2,7 @@
 
 **APEX — Adaptive Payload EXchange**
 
-**Status:** Draft | **Scope:** Wayfinding device class ([`traffic_type = 3`](APEX_Device_Classes.md#2--registry))
+**Status:** Draft | **Scope:** Wayfinding device class ([`traffic_type = 4`](APEX_Device_Classes.md#2--registry))
 
 ---
 
@@ -25,7 +25,9 @@ The protocol is **agnostic to the source of the cue**. A wayfinding Device may c
 - Bidirectional negotiation about *which* target the operator is following.
 - Bearing values at sub-degree precision. Bearings are reported in whole degrees ([§3.1](#3-1--bearing-reference)); a future version may add a higher-precision mode.
 
-This document covers **both sides** of the class — Device role and Host role. Discovery, framing, and capability exchange at the bus level are out of scope and are handled by Core. All frames in this class carry `traffic_type = 3` in the APEX outer header.
+This document covers **both sides** of the class — Device role and Host role. Discovery, framing, and capability exchange at the bus level are out of scope and are handled by Core. All frames in this class carry `traffic_type = 4` in the APEX v1 outer header.
+
+This document defines **class version 1** of the Wayfinding class; the class version in force for a session is negotiated at discovery — see [APEX — Core](APEX_Core.md).
 
 ---
 
@@ -82,7 +84,7 @@ A Device that includes no optional fields sets `optional_fields = 0`. A Device t
 <a id="4--message-format" name="4--message-format"></a>
 ## 4.  Message Format
 
-The class follows the APEX framing model ([APEX — Core §3](APEX_Core.md#3--communication-protocol-uart)): every frame carries `traffic_type = 3`, is COBS-framed, and uses the outer header from [APEX — Core §3.1.1](APEX_Core.md#3-1-1--outer-header-apexv0hdr_t), with the inner payload carrying class-specific content. All multi-byte fields are little-endian ([APEX — Core §3.1](APEX_Core.md#3-1--frame-layout)).
+The class follows the APEX framing model ([APEX — Core §3](APEX_Core.md#3--communication-protocol-uart)): every frame carries `traffic_type = 4`, is COBS-framed, and uses the outer header from [APEX — Core §3.1.1](APEX_Core.md#3-1-1--outer-header-apexhdr_t), with the inner payload carrying class-specific content. All multi-byte fields are little-endian ([APEX — Core §3.1](APEX_Core.md#3-1--frame-layout)).
 
 <a id="4-1--inner-payload-sub-header" name="4-1--inner-payload-sub-header"></a>
 ### 4.1.  Inner payload sub-header
@@ -98,7 +100,7 @@ The class follows the APEX framing model ([APEX — Core §3](APEX_Core.md#3--co
 <a id="4-2--lifecycle-overview" name="4-2--lifecycle-overview"></a>
 ### 4.2.  Lifecycle overview
 
-1. Core discovery completes for `device_class_req = 3` ([APEX — Core §3.3](APEX_Core.md#3-3--startup-discovery-handshake)). Class traffic on `traffic_type = 3` becomes valid.
+1. Core discovery completes for `device_class_req = 4` ([APEX — Core §3.3](APEX_Core.md#3-3--startup-discovery-handshake)). Class traffic on `traffic_type = 4` becomes valid.
 2. Device immediately emits **CAPABILITY** ([§4.3](#4-3--capability-frame-device--host)) — unprompted, exactly once.
 3. Host emits **CONFIG** ([§4.4](#4-4--config-frame-host--device)) accepting the declared shape.
 4. Device replies **ACK** ([§4.5](#4-5--ack-frame-device--host)). On `ACCEPTED`, the session enters ACTIVE.
@@ -110,16 +112,15 @@ The class follows the APEX framing model ([APEX — Core §3](APEX_Core.md#3--co
 | Offset | Field | Width | Description |
 | --- | --- | --- | --- |
 | `0` | `class_msg_id` | `u8` | `1` (CAPABILITY). |
-| `1` | `class_spec_version` | `u8` | Wayfinding-class spec revision the Device implements. `0` = the revision defined by this document. |
-| `2` | `max_targets` | `u8` | Number of simultaneously addressable target slots. `1..16`. The Host uses indices `1..max_targets` in TARGET_UPDATE frames. |
-| `3` | `optional_fields` | `u8` | Bitmask of optional measurement fields the Device includes in every TARGET_UPDATE ([§3.2](#3-2--optional-measurement-fields)). |
-| `4` | `descriptor_max_bytes` | `u8` | Maximum length, in bytes, of the descriptor field the Device will ever emit. `0..32`. A value of `0` means the Device does not emit descriptors. |
-| `5` | `proximity_polarity` | `u8` | Tells the Host which direction of change means *the target is getting closer*. `0` = `LOWER_IS_CLOSER` (e.g. meters, range — the value decreases as the operator approaches). `1` = `HIGHER_IS_CLOSER` (e.g. RSSI, signal strength — the value increases as the operator approaches). **Present only when bit 1 of `optional_fields` is set** ([§3.2](#3-2--optional-measurement-fields)); omitted otherwise. |
-| `6…13` | `proximity_unit` | `char[8]` | ASCII unit label for the `PROXIMITY` field, NUL-padded to 8 bytes. The Host displays this string verbatim alongside the value (typical labels: `"m"`, `"km"`, `"dBm"`, `"RSSI"`). **Present only when bit 1 of `optional_fields` is set**; omitted otherwise. The string is the last field in CAPABILITY so a future revision can promote it to a variable-length representation without disturbing earlier offsets. |
+| `1` | `max_targets` | `u8` | Number of simultaneously addressable target slots. `1..16`. The Host uses indices `1..max_targets` in TARGET_UPDATE frames. |
+| `2` | `optional_fields` | `u8` | Bitmask of optional measurement fields the Device includes in every TARGET_UPDATE ([§3.2](#3-2--optional-measurement-fields)). |
+| `3` | `descriptor_max_bytes` | `u8` | Maximum length, in bytes, of the descriptor field the Device will ever emit. `0..32`. A value of `0` means the Device does not emit descriptors. |
+| `4` | `proximity_polarity` | `u8` | Tells the Host which direction of change means *the target is getting closer*. `0` = `LOWER_IS_CLOSER` (e.g. meters, range — the value decreases as the operator approaches). `1` = `HIGHER_IS_CLOSER` (e.g. RSSI, signal strength — the value increases as the operator approaches). **Present only when bit 1 of `optional_fields` is set** ([§3.2](#3-2--optional-measurement-fields)); omitted otherwise. |
+| `5…12` | `proximity_unit` | `char[8]` | ASCII unit label for the `PROXIMITY` field, NUL-padded to 8 bytes. The Host displays this string verbatim alongside the value (typical labels: `"m"`, `"km"`, `"dBm"`, `"RSSI"`). **Present only when bit 1 of `optional_fields` is set**; omitted otherwise. The string is the last field in CAPABILITY so a future revision can promote it to a variable-length representation without disturbing earlier offsets. |
 
 A `max_targets` of `0` or `max_targets > 16` is malformed; the Host MUST reply `REJECT_MALFORMED` ([§4.5](#4-5--ack-frame-device--host)). A `descriptor_max_bytes > 32` is malformed for the same reason. A `proximity_polarity` value other than `0` or `1` is malformed.
 
-A `class_spec_version` value the Host does not understand should be treated as `0` — the Host parses the fields it knows. Future revisions of this spec will extend CAPABILITY only by appending fields, never by repurposing existing ones.
+CAPABILITY carries no version byte: the layout in force is governed by the class version negotiated at discovery ([APEX — Core](APEX_Core.md)). Compatible revisions of this spec will extend CAPABILITY only by appending fields, never by repurposing existing ones.
 
 <a id="4-4--config-frame-host--device" name="4-4--config-frame-host--device"></a>
 ### 4.4.  CONFIG frame (Host → Device)
@@ -233,12 +234,12 @@ A wayfinding payload that streams up to **3 targets** with a **proximity** measu
 - `descriptor_max_bytes = 7`
 - `proximity_polarity = 0` (LOWER_IS_CLOSER)
 - `proximity_unit = "m"`
-- Has completed Core discovery and been assigned `device_id = 0x01`.
+- Has completed Core discovery and been assigned `device_id = 0x02`.
 
 <a id="6-2--frame-notation" name="6-2--frame-notation"></a>
 ### 6.2.  Frame notation
 
-Frames below use the common notation defined in Core [§3.1.5](APEX_Core.md#3-1-5--frame-notation): each is shown as the bytes before CRC and COBS. `PV = 00`, `TT = 03`, `ID = 01` throughout.
+Frames below use the common notation defined in Core [§3.1.5](APEX_Core.md#3-1-5--frame-notation): each is shown as the bytes before CRC and COBS. `PV = 01`, `TT = 04`, `ID = 02` throughout.
 
 <a id="6-3--sequence" name="6-3--sequence"></a>
 ### 6.3.  Sequence
@@ -259,29 +260,28 @@ sequenceDiagram
 
 #### ▸ Step 1 — Device emits CAPABILITY
 
-Inner payload 14 bytes (`LN = 0E`).
+Inner payload 13 bytes (`LN = 0D`).
 
 ```
-00 03 01 0E    01 00 03 02 07 00 6D 00 00 00 00 00 00 00
+01 04 02 0D    01 03 02 07 00 6D 00 00 00 00 00 00 00
 ```
 
 | Byte(s) | Hex | Field | Value |
 | --- | --- | --- | --- |
-| 0–3 | `00 03 01 0E` | outer header | `LN=0E` (14) |
+| 0–3 | `01 04 02 0D` | outer header | `LN=0D` (13) |
 | 4 | `01` | `class_msg_id` | `1` (CAPABILITY) |
-| 5 | `00` | `class_spec_version` | `0` |
-| 6 | `03` | `max_targets` | `3` |
-| 7 | `02` | `optional_fields` | `0b00000010` (PROXIMITY) |
-| 8 | `07` | `descriptor_max_bytes` | `7` |
-| 9 | `00` | `proximity_polarity` | `0` (LOWER_IS_CLOSER) |
-| 10–17 | `6D 00 00 00 00 00 00 00` | `proximity_unit` | `"m"` (NUL-padded to 8 bytes) |
+| 5 | `03` | `max_targets` | `3` |
+| 6 | `02` | `optional_fields` | `0b00000010` (PROXIMITY) |
+| 7 | `07` | `descriptor_max_bytes` | `7` |
+| 8 | `00` | `proximity_polarity` | `0` (LOWER_IS_CLOSER) |
+| 9–16 | `6D 00 00 00 00 00 00 00` | `proximity_unit` | `"m"` (NUL-padded to 8 bytes) |
 
 #### ▸ Step 2 — Host emits CONFIG
 
 Inner payload 1 byte (`LN = 01`).
 
 ```
-00 03 01 01    02
+01 04 02 01    02
 ```
 
 | Byte(s) | Hex | Field | Value |
@@ -293,7 +293,7 @@ Inner payload 1 byte (`LN = 01`).
 Inner payload 2 bytes (`LN = 02`).
 
 ```
-00 03 01 02    03 00
+01 04 02 02    03 00
 ```
 
 | Byte(s) | Hex | Field | Value |
@@ -308,7 +308,7 @@ The Device transitions WAITING_CONFIG → ACTIVE and begins streaming.
 Inner payload 14 bytes (`LN = 0E`).
 
 ```
-00 03 01 0E    04 01 2D 00 5E 01 07 57 41 59 50 54 2D 31
+01 04 02 0E    04 01 2D 00 5E 01 07 57 41 59 50 54 2D 31
 ```
 
 | Byte(s) | Hex | Field | Value |
@@ -325,7 +325,7 @@ Inner payload 14 bytes (`LN = 0E`).
 Inner payload 14 bytes (`LN = 0E`).
 
 ```
-00 03 01 0E    04 02 0E 01 78 00 07 57 41 59 50 54 2D 32
+01 04 02 0E    04 02 0E 01 78 00 07 57 41 59 50 54 2D 32
 ```
 
 | Byte(s) | Hex | Field | Value |
@@ -342,7 +342,7 @@ Inner payload 14 bytes (`LN = 0E`).
 The Device clears target index 1 by sending `bearing = 0xFFFF`; the optional fields and descriptor are omitted. Inner payload 4 bytes (`LN = 04`).
 
 ```
-00 03 01 04    04 01 FF FF
+01 04 02 04    04 01 FF FF
 ```
 
 | Byte(s) | Hex | Field | Value |

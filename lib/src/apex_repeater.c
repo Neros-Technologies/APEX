@@ -173,7 +173,7 @@ static void dev_send_telemetry(apex_repeater_device_t *d)
 
 static void dev_send_config_report(apex_repeater_device_t *d)
 {
-    uint8_t buf[APEX_V0_MAX_PAYLOAD_LENGTH];
+    uint8_t buf[APEX_MAX_PAYLOAD_LENGTH];
     size_t len = dev_build_config_report(d, buf, sizeof(buf));
     if (len > 0) dev_send(d, buf, len);
 }
@@ -683,7 +683,7 @@ apex_status_t apex_repeater_host_set_config(apex_repeater_host_t *h,
     if (update_mask & 0x80u) return APEX_ERR_INVALID_ARGS;
     if (update_mask & APEX_RPT_UPDATE_ANTENNA) return APEX_ERR_INVALID_ARGS;
 
-    uint8_t buf[APEX_V0_MAX_PAYLOAD_LENGTH];
+    uint8_t buf[APEX_MAX_PAYLOAD_LENGTH];
     size_t i = 0;
     buf[i++] = APEX_RPT_MSG_SET_CONFIG;
     buf[i++] = update_mask;

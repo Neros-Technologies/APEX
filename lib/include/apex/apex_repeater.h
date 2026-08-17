@@ -1,6 +1,6 @@
 /**
  * @file apex_repeater.h
- * @brief Repeater device class (traffic_type = 4). Both Host and Device sides.
+ * @brief Repeater device class (traffic_type = 5). Both Host and Device sides.
  *        See APEX_Device_Class_Repeater.md for the wire protocol.
  *
  * The Repeater class covers RF relay nodes that extend C2 and video links
@@ -48,7 +48,7 @@ extern "C" {
 /* Max raw bytes in a single DISTAL_TLM frame
  * (class_msg_id + link_index + c2_protocol consume 3). */
 #ifndef APEX_REPEATER_DISTAL_TLM_MAX
-#define APEX_REPEATER_DISTAL_TLM_MAX (APEX_V0_MAX_PAYLOAD_LENGTH - 3u)
+#define APEX_REPEATER_DISTAL_TLM_MAX (APEX_MAX_PAYLOAD_LENGTH - 3u)
 #endif
 
 /* Timing constants (§6.9). */
