@@ -27,7 +27,7 @@ class-agnostic.
 | [APEX Device Class — Wayfinding](spec/APEX_Device_Class_Wayfinding.md) | Devices that produce directional cues — "point me there" updates for the operator, from any source. |
 | [APEX Device Class — Repeater](spec/APEX_Device_Class_Repeater.md) | RF relay node: extends C2 and video links between ground and a distal drone. |
 
-Planned classes reserved in the registry: **USB_FS_HUB**.
+Planned classes reserved in the registry: **USB_FS_HUB** and **MAVLINK**.
 
 Once a device is discovered and its class accepted, all further traffic is routed
 by `traffic_type` to the relevant device-class specification.
@@ -45,9 +45,21 @@ allocation, no `stdio`, and no third-party dependencies. See
 
 ## Mechanical
 
-The mechanical standard package is provided under
+The normative mechanical standard is provided under
 [`spec/mechanical/`](spec/mechanical/): a 3D CAD model of the connector assembly
-in STEP format and the corresponding 2D drawing in PDF.
+in STEP format (`APEX STANDARD V0.9.STEP`) and the corresponding 2D drawing in
+PDF (`APEX STANDARD V0.9.pdf`).
+
+Non-normative reference designs are provided under
+[`spec/mechanical/reference/`](spec/mechanical/reference/) as an example of a
+conforming implementation. For each of the **carrier** (host side) and the
+**payload** (device side) there are two STEP models:
+
+- `APEX <role> PCBA, REFERENCE IMPLEMENTATION.STEP` — the bare populated board.
+- `APEX <role> REFERENCE IMPLEMENTATION.STEP` — the full mechanical assembly.
+
+These reference designs are informative only; the connector standard above is
+the authoritative geometry.
 
 ## License
 

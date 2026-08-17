@@ -26,6 +26,7 @@ Class assignment happens during discovery: the device declares its desired class
 | `3` | **WAYFINDING** | Devices that produce directional cues — "point me there" updates for the operator, from any source. | [APEX Device Class — Wayfinding](APEX_Device_Class_Wayfinding.md) |
 | `4` | **REPEATER** | RF relay node: extends C2 and video links between ground and a distal drone. | [APEX Device Class — Repeater](APEX_Device_Class_Repeater.md) |
 | `5` | **USB_FS_HUB** | Full-Speed USB passthrough traffic. | *(TBD)* |
+| `6` | **MAVLINK** | Transparent bidirectional MAVLink byte tunnel between a payload MAVLink endpoint and the Host. | *(TBD)* |
 
 ---
 

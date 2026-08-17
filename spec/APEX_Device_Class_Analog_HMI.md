@@ -272,7 +272,7 @@ everything else it needs.
 <a id="5-1--mavlink-2-frame-size" name="5-1--mavlink-2-frame-size"></a>
 ### 5.1.  MAVLink 2 frame size
 
-A MAVLink 2 frame can be up to 280 bytes (12 B header + 255 B payload + 2 B
+A MAVLink 2 frame can be up to 280 bytes (10 B header + 255 B payload + 2 B
 CRC + 13 B signature). The APEX V0 inner-payload cap is **255** bytes, of
 which the CONTROL_DATA `class_msg_id` consumes one — leaving **254** bytes
 for the wrapped MAVLink frame.
