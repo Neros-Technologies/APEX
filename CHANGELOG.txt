@@ -6,6 +6,23 @@ refers to the APEX outer-header protocol version; "class version" refers to
 a device class's independently negotiated revision.
 
 
+Unreleased
+
+Reference implementation only — no wire-protocol or spec change. Device-side
+Activation-class API ergonomics, making the full spec-allowed range of device
+behavior convenient to drive.
+- Execute callback split: on_execute (software-must-act) becomes on_execute_request
+  (software path) plus a neutral on_executed (an activation completed, HW or SW).
+  New report_execution() records a hardware activation in one call.
+- Self-initiated transitions: device disable() (self-disarm), fault() (force the
+  terminal FAULT from any state), and trigger_window_expired() (§4.1 flag +
+  disarm, atomic).
+- Autonomous preconditions: precondition_start/pass/fail() name the valid drives,
+  and a new on_precondition_change observer fires on every change (eases OSD).
+- trigger()/report_execution() now return apex_status_t; new read-only getters
+  activations_remaining/precondition_state/fault_flags/last_trigger_source.
+
+
 v1.0.0 — 2026-08-11
 
 APEX v1.0 is a deliberately breaking revision of the wire protocol. v0
