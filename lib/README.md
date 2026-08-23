@@ -91,6 +91,46 @@ device-side link state (`apex_device_link_state_t`) mirrors this as
 `DISCOVERING -> PROVISIONAL -> CONNECTED`, with `REJECTED` (terminal reject) and
 `INCOMPATIBLE` (VERSION_BEACON named a disjoint wire-version range) as off-ramps.
 
+## Writing an Activation device
+
+The device side of the Activation class (`apex_activation.h`) exposes clean,
+self-documenting calls for every transition the spec lets a device make on its
+own. You never hand-roll a wire frame.
+
+**Preconditions (§4.1)** — drive them autonomously (declare them in
+`caps.auto_start_mask`) or on host request (`on_start_precondition`):
+
+```c
+apex_activation_device_precondition_start(&act, i); /* -> Running  */
+apex_activation_device_precondition_pass(&act, i);  /* -> Valid    (advances to READY) */
+apex_activation_device_precondition_fail(&act, i);  /* -> Failed   (retriable) */
+```
+
+`on_precondition_change(user, idx, state)` fires on every change — the natural
+place to push `DISPLAY_TEXT` OSD prompts (`apex_activation_device_push_text`).
+
+**Arming** is host-commanded only — there is intentionally no device
+self-enable (safety). The device completes a non-instant enable/disable with
+`transition_complete()` / `transition_failed()`, and can stand itself down at
+any time with `apex_activation_device_disable()`.
+
+**Activation** splits by who does the work:
+
+| Situation | Call | Hook fired |
+| --- | --- | --- |
+| Software must perform the action | (host `TRIGGER`, or `..._trigger(src)`) then `..._complete_execution()` | `on_execute_request` then `on_executed` |
+| Hardware already did it | `..._report_execution(src)` (one call) | `on_executed` |
+
+`on_executed(user, src)` is the neutral "an activation completed" signal for
+telemetry/logging; `on_execute_request` means "software, act now."
+
+**Faults & timers** — `apex_activation_device_fault(flags)` forces the terminal
+FAULT from any state; `apex_activation_device_trigger_window_expired()` flags and
+disarms atomically for the §4.1 window pattern.
+
+**Read state** with the inline getters: `_state`, `_activations_remaining`,
+`_precondition_state(idx)`, `_fault_flags`, `_last_trigger_source`.
+
 ## Consumption patterns
 
 ### As a static library

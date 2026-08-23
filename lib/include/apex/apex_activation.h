@@ -296,15 +296,39 @@ typedef struct {
     apex_status_t (*on_start_precondition)(void *user, uint8_t idx);
     void *on_start_precondition_user;
 
-    /* Optional: fired when the device transitions into EXECUTING. The
-     * application starts its action and eventually calls
-     * apex_activation_device_complete_execution(). */
-    void (*on_execute)(void *user);
-    void *on_execute_user;
+    /* Optional: a trigger requires device SOFTWARE to perform the activation
+     * now. Fired on the software path — apex_activation_device_trigger() and a
+     * host TRIGGER command — as the device enters EXECUTING. The application
+     * performs its action and calls apex_activation_device_complete_execution()
+     * when done. `source_idx` is the declared trigger source that fired.
+     * A device whose activation is performed entirely in hardware never needs
+     * this hook: it reports the fact with apex_activation_device_report_execution()
+     * and observes on_executed instead. */
+    void (*on_execute_request)(void *user, uint8_t source_idx);
+    void *on_execute_request_user;
+
+    /* Optional: neutral notification that an activation has COMPLETED — whether
+     * performed in software or already done in hardware. Fired once per
+     * activation: at apex_activation_device_complete_execution() for the software
+     * path, and inside apex_activation_device_report_execution() for the hardware
+     * path. Ideal for telemetry, logging, and OSD. `source_idx` is the source
+     * that fired. */
+    void (*on_executed)(void *user, uint8_t source_idx);
+    void *on_executed_user;
 
     /* Optional: state transition observer. */
     void (*on_state_change)(void *user, apex_activation_state_t s);
     void *on_state_change_user;
+
+    /* Optional: precondition state-change observer. Fired whenever a
+     * precondition's reported state changes — including the initial auto-start
+     * transition to Running and every autonomous or host-driven change
+     * thereafter. Well suited to driving DISPLAY_TEXT prompts/progress (§6.8) as
+     * a precondition advances. `idx` is the precondition index, `new_state` its
+     * new value. */
+    void (*on_precondition_change)(void *user, uint8_t idx,
+                                   apex_precond_state_t new_state);
+    void *on_precondition_change_user;
 
     /* Required when caps.n_gpio_bindings > 0: read the current logic level of a
      * GPIO line. Returns true for logic high, false for logic low. Polled from
@@ -405,22 +429,88 @@ void apex_activation_device_on_rx(apex_activation_device_t *act,
                                   const uint8_t *payload,
                                   size_t payload_len);
 
-/* Drive a precondition's state directly (used for both auto-start and host-start
- * preconditions once validation is running). */
+/* Drive a precondition's state directly — the primitive beneath the named
+ * helpers below. Latched Valid never reverts (§4.1). A change fires
+ * on_precondition_change. */
 void apex_activation_device_set_precondition_state(apex_activation_device_t *act,
                                                    uint8_t idx,
                                                    apex_precond_state_t new_state);
 
-/* Fire a hardware/timer/external trigger. `source_idx` must be a declared
- * trigger source. No effect unless in ENABLED (§3 — triggers are honored only in
- * ENABLED, and never once a SET_DISABLED has been accepted). */
-void apex_activation_device_trigger(apex_activation_device_t *act,
-                                    uint8_t source_idx);
+/* Autonomous precondition drive (§4.1). A device that validates a precondition
+ * on its own — without waiting for a host START_PRECONDITION — declares it in
+ * caps.auto_start_mask and drives it with these: start it, then report the
+ * outcome when its own monitoring completes. They are thin, self-documenting
+ * wrappers over set_precondition_state.
+ *   _start → Running   (begin/retry validating; moves STANDBY → VALIDATING)
+ *   _pass  → Valid      (latch success; advances to READY when all are Valid)
+ *   _fail  → Failed     (retriable or terminal per the per-payload profile)
+ * Return APEX_ERR_INVALID_ARGS for an undeclared index, APEX_ERR_BAD_STATE if the
+ * precondition is already latched Valid, else APEX_OK. */
+apex_status_t apex_activation_device_precondition_start(apex_activation_device_t *act,
+                                                        uint8_t idx);
+apex_status_t apex_activation_device_precondition_pass(apex_activation_device_t *act,
+                                                       uint8_t idx);
+apex_status_t apex_activation_device_precondition_fail(apex_activation_device_t *act,
+                                                       uint8_t idx);
 
-/* Called by the application when the EXECUTING action has finished. The device
- * decrements activations_remaining and transitions to ENABLED (if more
- * activations remain) or EXHAUSTED (otherwise). */
+/* Fire a trigger whose activation is performed in SOFTWARE. `source_idx` must be
+ * a declared trigger source (any category). Honored only in ENABLED (§3 —
+ * triggers are honored only in ENABLED, and never once a SET_DISABLED has been
+ * accepted). The device enters EXECUTING and fires on_execute_request; the
+ * application performs the action and calls apex_activation_device_complete_execution().
+ * on_execute_request is a NOTIFICATION, not the only completion path: an app that
+ * leaves it NULL must still complete the EXECUTING state itself (by its own logic,
+ * calling complete_execution) — a device that enters EXECUTING and never completes
+ * it stays there and blocks re-enumeration (§7.4). For an activation that already
+ * occurred in hardware, prefer apex_activation_device_report_execution(), which
+ * completes in one call. Returns APEX_OK if the trigger was honored,
+ * APEX_ERR_BAD_STATE if not in ENABLED, or APEX_ERR_INVALID_ARGS for an
+ * undeclared source. */
+apex_status_t apex_activation_device_trigger(apex_activation_device_t *act,
+                                             uint8_t source_idx);
+
+/* Report an activation that has ALREADY occurred in hardware (the trigger and
+ * the action are one and the same — nothing for software to perform). `source_idx`
+ * must be a declared trigger source. Honored only in ENABLED. The device passes
+ * through EXECUTING and completes the activation in a single call:
+ * activations_remaining is decremented, on_executed fires, and the device settles
+ * in ENABLED (more remain) or EXHAUSTED. Do NOT also call complete_execution().
+ * Returns APEX_OK, APEX_ERR_BAD_STATE (not ENABLED), or APEX_ERR_INVALID_ARGS. */
+apex_status_t apex_activation_device_report_execution(apex_activation_device_t *act,
+                                                      uint8_t source_idx);
+
+/* Called by the application when a SOFTWARE EXECUTING action (started via
+ * on_execute_request) has finished. The device decrements activations_remaining,
+ * fires on_executed, and transitions to ENABLED (if more activations remain) or
+ * EXHAUSTED (otherwise). No effect outside EXECUTING. */
 void apex_activation_device_complete_execution(apex_activation_device_t *act);
+
+/* Device-initiated disarm — the self-issued equivalent of a host SET_DISABLED
+ * (§3, §5), for a device that must stand itself down (a safety condition, a
+ * trigger-window expiry, …). From ENABLED the device enters DISABLING (or goes
+ * straight to READY on an instant device); from ENABLING it aborts toward READY
+ * when caps.can_abort_enabling permits. In DISABLING/READY it is an idempotent
+ * no-op. Fires on_disable_begin on a non-instant device (complete the transition
+ * with apex_activation_device_transition_complete()).
+ *
+ * There is intentionally NO device self-ENABLE: arming is host-commanded only
+ * (SET_ENABLED), a deliberate safety invariant (§3). A device drives itself only
+ * downward (disarm) and sideways (preconditions, faults), never into the armed
+ * region on its own.
+ *
+ * Returns APEX_OK if the device is now disarming or already disarmed, or
+ * APEX_ERR_BAD_STATE from a state where disarm does not apply (STANDBY,
+ * VALIDATING, EXECUTING, EXHAUSTED, FAULT, or ENABLING without abort support). */
+apex_status_t apex_activation_device_disable(apex_activation_device_t *act);
+
+/* Convenience for the §4.1 trigger-window pattern on the ENABLED state: the
+ * declared window elapsed with no trigger, so return to a safer state and flag
+ * it. Atomically sets the self-clearing TRIGGER_WINDOW_EXPIRED fault flag and
+ * self-disarms (disable()), avoiding the split-brain of setting one without the
+ * other. Returns disable()'s status (the flag is set regardless). A payload whose
+ * "safer state" is not READY (e.g. a window gating a precondition) should compose
+ * the primitives itself. */
+apex_status_t apex_activation_device_trigger_window_expired(apex_activation_device_t *act);
 
 /* Non-instant transition completion (§3). Call from the on_enable_begin /
  * on_disable_begin path once the enable/disable work is done: ENABLING → ENABLED,
@@ -435,7 +525,12 @@ void apex_activation_device_transition_complete(apex_activation_device_t *act);
  * with a latched bit to force FAULT. No effect outside ENABLING/DISABLING. */
 void apex_activation_device_transition_failed(apex_activation_device_t *act);
 
-/* Set a fault flag. Latched flags also transition the device to FAULT. */
+/* Set a fault flag. Latched flags also transition the device to FAULT (for an
+ * explicit, unconditional fault from any state, prefer apex_activation_device_fault()).
+ * NOTE: do not set the transition flag TRANSITION_FAILED through this call — it
+ * would set the bit without the accompanying return-to-READY. Report a failed
+ * enable/disable via apex_activation_device_transition_failed() instead, which
+ * does both. */
 void apex_activation_device_set_fault_flag(apex_activation_device_t *act,
                                            uint16_t flag);
 
@@ -443,6 +538,14 @@ void apex_activation_device_set_fault_flag(apex_activation_device_t *act,
  * TRANSITION_FAILED). Latched flags are not cleared; they require a reset. */
 void apex_activation_device_clear_fault_flag(apex_activation_device_t *act,
                                              uint16_t flag);
+
+/* Force the device into the terminal FAULT state (§3) from ANY state, recording
+ * `flags` in fault_flags as the reason — pass APEX_ACT_FAULT_INTERNAL_ERROR for a
+ * generic self-check/hardware failure, or any payload-relevant fault bit(s).
+ * Unlike set_fault_flag(), this always transitions to FAULT whether or not the
+ * flags are latched. FAULT is terminal in this class version; only a device reset
+ * (a fresh apex_activation_device_init) recovers. */
+void apex_activation_device_fault(apex_activation_device_t *act, uint16_t flags);
 
 /* Set the payload_specific region of subsequent STATUS frames. Length must be
  * <= APEX_ACTIVATION_PAYLOAD_SPECIFIC_MAX. */
@@ -471,6 +574,35 @@ apex_status_t apex_activation_device_push_text(apex_activation_device_t *act,
 static inline apex_activation_state_t apex_activation_device_state(const apex_activation_device_t *act)
 {
     return act->state;
+}
+
+/* Activations left before the device becomes EXHAUSTED. */
+static inline uint8_t apex_activation_device_activations_remaining(const apex_activation_device_t *act)
+{
+    return act->activations_remaining;
+}
+
+/* Current state of precondition `idx` (APEX_PRECOND_NOT_STARTED for an
+ * out-of-range index). */
+static inline apex_precond_state_t apex_activation_device_precondition_state(const apex_activation_device_t *act,
+                                                                            uint8_t idx)
+{
+    return (idx < act->caps.n_preconditions)
+           ? (apex_precond_state_t)act->precondition_states[idx]
+           : APEX_PRECOND_NOT_STARTED;
+}
+
+/* Current fault_flags bitfield (§6.5). */
+static inline uint16_t apex_activation_device_fault_flags(const apex_activation_device_t *act)
+{
+    return act->fault_flags;
+}
+
+/* Index of the trigger source that caused the most recent EXECUTING transition
+ * (0xFF before any activation) — the value reported in the STATUS frame (§6.5). */
+static inline uint8_t apex_activation_device_last_trigger_source(const apex_activation_device_t *act)
+{
+    return act->last_trigger_source;
 }
 
 /* ---------------------------------------------------------------------------

@@ -143,22 +143,38 @@ protected:
     DisplayTextCapture dtext{};
     apex_activation_device_caps_t caps_{};
     apex_activation_device_hooks_t dh_{};
-    bool on_execute_fired = false;
+    bool on_execute_fired = false;      // on_execute_request (software path)
+    int  execute_request_src = -1;
+    int  executed_count = 0;            // on_executed (neutral, HW or SW)
+    int  executed_src = -1;
     bool enable_began = false;
     bool disable_began = false;
+    int  precond_change_count = 0;      // on_precondition_change
+    int  precond_change_idx = -1;
+    apex_precond_state_t precond_change_state = APEX_PRECOND_NOT_STARTED;
     uint32_t now_ms = 0;
 
     std::vector<WireFrame> dwire;  /* all device→host frames, whole test */
     std::vector<WireFrame> hwire;  /* all host→device frames, whole test */
 
-    static void on_execute_cb(void* u) {
-        static_cast<ActivationWalkthrough*>(u)->on_execute_fired = true;
+    static void on_execute_request_cb(void* u, uint8_t src) {
+        auto* p = static_cast<ActivationWalkthrough*>(u);
+        p->on_execute_fired = true; p->execute_request_src = src;
+    }
+    static void on_executed_cb(void* u, uint8_t src) {
+        auto* p = static_cast<ActivationWalkthrough*>(u);
+        p->executed_count++; p->executed_src = src;
     }
     static void on_enable_begin_cb(void* u) {
         static_cast<ActivationWalkthrough*>(u)->enable_began = true;
     }
     static void on_disable_begin_cb(void* u) {
         static_cast<ActivationWalkthrough*>(u)->disable_began = true;
+    }
+    static void on_precond_change_cb(void* u, uint8_t idx, apex_precond_state_t s) {
+        auto* p = static_cast<ActivationWalkthrough*>(u);
+        p->precond_change_count++; p->precond_change_idx = idx;
+        p->precond_change_state = s;
     }
 
     static void dev_class_rx_trampoline(void* u, const uint8_t* p, size_t n) {
@@ -206,9 +222,12 @@ protected:
         caps_.auto_start_mask = (1u << 0);   // precondition 0 auto-starts
         caps_.initial_activations_remaining = 1;
 
-        dh_.on_execute = on_execute_cb;      dh_.on_execute_user = this;
-        dh_.on_enable_begin = on_enable_begin_cb;  dh_.on_enable_begin_user = this;
-        dh_.on_disable_begin = on_disable_begin_cb; dh_.on_disable_begin_user = this;
+        dh_.on_execute_request = on_execute_request_cb; dh_.on_execute_request_user = this;
+        dh_.on_executed = on_executed_cb;            dh_.on_executed_user = this;
+        dh_.on_enable_begin = on_enable_begin_cb;    dh_.on_enable_begin_user = this;
+        dh_.on_disable_begin = on_disable_begin_cb;  dh_.on_disable_begin_user = this;
+        dh_.on_precondition_change = on_precond_change_cb;
+        dh_.on_precondition_change_user = this;
         ReinitDevice();
     }
 
@@ -955,6 +974,213 @@ TEST_F(ActivationWalkthrough, AppReenumHookComposesBothMustPermit) {
     PumpUntilQuiet(32);
     EXPECT_EQ(APEX_DEVICE_STATE_CONNECTED, apex_device_link_state(&dev_core));
     EXPECT_EQ(APEX_ACTIVATION_STATE_READY, status.last.state);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Device-side self-service API (post-v1.0 ergonomics pass)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Execute split, software path: a host TRIGGER (source 0 = HOST_COMMAND) asks the
+// device software to act (on_execute_request); the neutral on_executed fires only
+// when the software reports completion.
+TEST_F(ActivationWalkthrough, ExecuteSplitSoftwarePath) {
+    caps_.initial_activations_remaining = 2;
+    ReinitDevice();
+    PumpUntilQuiet();
+    uint8_t dev_id = apex_device_get_id(&dev_core);
+    ValidateBothPreconditions();
+    ASSERT_EQ(APEX_OK, apex_activation_host_set_enabled(&act_host, dev_id));
+    PumpUntilQuiet();
+    apex_activation_device_transition_complete(&act_dev);
+    PumpUntilQuiet();
+    ASSERT_EQ(APEX_ACTIVATION_STATE_ENABLED, apex_activation_device_state(&act_dev));
+
+    on_execute_fired = false; executed_count = 0; execute_request_src = -1;
+    ASSERT_EQ(APEX_OK, apex_activation_host_trigger(&act_host, dev_id));
+    PumpUntilQuiet();
+    EXPECT_TRUE(on_execute_fired) << "software trigger requests action";
+    EXPECT_EQ(0, execute_request_src);
+    EXPECT_EQ(0, executed_count) << "on_executed waits for completion on the SW path";
+    ASSERT_EQ(APEX_ACTIVATION_STATE_EXECUTING, apex_activation_device_state(&act_dev));
+
+    apex_activation_device_complete_execution(&act_dev);
+    EXPECT_EQ(1, executed_count);
+    EXPECT_EQ(0, executed_src);
+    EXPECT_EQ(1, apex_activation_device_activations_remaining(&act_dev));
+    EXPECT_EQ(APEX_ACTIVATION_STATE_ENABLED, apex_activation_device_state(&act_dev));
+}
+
+// Execute split, hardware path: report_execution() records an activation that
+// already happened — one call passes through EXECUTING and completes, firing the
+// neutral on_executed and NEVER on_execute_request.
+TEST_F(ActivationWalkthrough, ExecuteSplitHardwarePath) {
+    caps_.initial_activations_remaining = 2;
+    ReinitDevice();
+    PumpUntilQuiet();
+    ValidateBothPreconditions();
+    ASSERT_EQ(APEX_OK, apex_activation_host_set_enabled(&act_host, apex_device_get_id(&dev_core)));
+    PumpUntilQuiet();
+    apex_activation_device_transition_complete(&act_dev);
+    PumpUntilQuiet();
+    ASSERT_EQ(APEX_ACTIVATION_STATE_ENABLED, apex_activation_device_state(&act_dev));
+
+    on_execute_fired = false; executed_count = 0;
+    apex_activation_device_report_execution(&act_dev, 1);  // source 1 = HARDWARE_INPUT
+    EXPECT_FALSE(on_execute_fired) << "hardware path never requests software action";
+    EXPECT_EQ(1, executed_count);
+    EXPECT_EQ(1, executed_src);
+    EXPECT_EQ(1, apex_activation_device_activations_remaining(&act_dev));
+    EXPECT_EQ(APEX_ACTIVATION_STATE_ENABLED, apex_activation_device_state(&act_dev));
+
+    apex_activation_device_report_execution(&act_dev, 1);  // exhaust
+    EXPECT_EQ(2, executed_count);
+    EXPECT_EQ(0, apex_activation_device_activations_remaining(&act_dev));
+    EXPECT_EQ(APEX_ACTIVATION_STATE_EXHAUSTED, apex_activation_device_state(&act_dev));
+}
+
+// Device self-disarm via the public disable(): ENABLED → DISABLING → READY;
+// idempotent from READY; APEX_ERR_BAD_STATE where disarm does not apply.
+TEST_F(ActivationWalkthrough, SelfDisable) {
+    caps_.initial_activations_remaining = 2;
+    ReinitDevice();
+    PumpUntilQuiet();
+    uint8_t dev_id = apex_device_get_id(&dev_core);
+    ValidateBothPreconditions();
+    ASSERT_EQ(APEX_ACTIVATION_STATE_READY, apex_activation_device_state(&act_dev));
+    EXPECT_EQ(APEX_OK, apex_activation_device_disable(&act_dev)) << "READY: idempotent";
+    EXPECT_EQ(APEX_ACTIVATION_STATE_READY, apex_activation_device_state(&act_dev));
+
+    ASSERT_EQ(APEX_OK, apex_activation_host_set_enabled(&act_host, dev_id));
+    PumpUntilQuiet();
+    apex_activation_device_transition_complete(&act_dev);
+    PumpUntilQuiet();
+    ASSERT_EQ(APEX_ACTIVATION_STATE_ENABLED, apex_activation_device_state(&act_dev));
+
+    disable_began = false;
+    EXPECT_EQ(APEX_OK, apex_activation_device_disable(&act_dev));
+    EXPECT_TRUE(disable_began) << "non-instant self-disable fires on_disable_begin";
+    EXPECT_EQ(APEX_ACTIVATION_STATE_DISABLING, apex_activation_device_state(&act_dev));
+    apex_activation_device_transition_complete(&act_dev);
+    EXPECT_EQ(APEX_ACTIVATION_STATE_READY, apex_activation_device_state(&act_dev));
+
+    // From EXECUTING, disarm does not apply.
+    ASSERT_EQ(APEX_OK, apex_activation_host_set_enabled(&act_host, dev_id));
+    PumpUntilQuiet();
+    apex_activation_device_transition_complete(&act_dev);
+    PumpUntilQuiet();
+    apex_activation_device_trigger(&act_dev, 1);
+    ASSERT_EQ(APEX_ACTIVATION_STATE_EXECUTING, apex_activation_device_state(&act_dev));
+    EXPECT_EQ(APEX_ERR_BAD_STATE, apex_activation_device_disable(&act_dev));
+    EXPECT_EQ(APEX_ACTIVATION_STATE_EXECUTING, apex_activation_device_state(&act_dev));
+}
+
+// Fully autonomous precondition: the device starts, monitors, and reports it
+// with no host START_PRECONDITION, reaching READY. The observer fires on each
+// transition.
+TEST_F(ActivationWalkthrough, AutonomousPreconditionDrive) {
+    caps_.n_preconditions = 1;
+    caps_.auto_start_mask = (1u << 0);
+    ReinitDevice();
+    PumpUntilQuiet();
+    // Auto-start put precondition 0 into Running and the machine into VALIDATING,
+    // firing the observer — with no host prompt.
+    EXPECT_EQ(APEX_ACTIVATION_STATE_VALIDATING, apex_activation_device_state(&act_dev));
+    EXPECT_EQ(APEX_PRECOND_RUNNING, apex_activation_device_precondition_state(&act_dev, 0));
+    EXPECT_GE(precond_change_count, 1);
+    EXPECT_EQ(0, precond_change_idx);
+    EXPECT_EQ(APEX_PRECOND_RUNNING, precond_change_state);
+
+    // Device reports its own success → Valid → READY.
+    precond_change_count = 0;
+    EXPECT_EQ(APEX_OK, apex_activation_device_precondition_pass(&act_dev, 0));
+    EXPECT_EQ(APEX_PRECOND_VALID, apex_activation_device_precondition_state(&act_dev, 0));
+    EXPECT_EQ(APEX_ACTIVATION_STATE_READY, apex_activation_device_state(&act_dev));
+    EXPECT_EQ(1, precond_change_count);
+    EXPECT_EQ(APEX_PRECOND_VALID, precond_change_state);
+
+    // pass() idempotent; start()/fail() on latched Valid are BAD_STATE; bad index.
+    EXPECT_EQ(APEX_OK, apex_activation_device_precondition_pass(&act_dev, 0));
+    EXPECT_EQ(APEX_ERR_BAD_STATE, apex_activation_device_precondition_start(&act_dev, 0));
+    EXPECT_EQ(APEX_ERR_BAD_STATE, apex_activation_device_precondition_fail(&act_dev, 0));
+    EXPECT_EQ(APEX_ERR_INVALID_ARGS, apex_activation_device_precondition_start(&act_dev, 9));
+}
+
+// Autonomous precondition can fail and be retried (Failed → Running).
+TEST_F(ActivationWalkthrough, PreconditionFailAndRetry) {
+    caps_.n_preconditions = 1;
+    caps_.auto_start_mask = (1u << 0);
+    ReinitDevice();
+    PumpUntilQuiet();
+    precond_change_count = 0;
+    EXPECT_EQ(APEX_OK, apex_activation_device_precondition_fail(&act_dev, 0));
+    EXPECT_EQ(APEX_PRECOND_FAILED, apex_activation_device_precondition_state(&act_dev, 0));
+    EXPECT_EQ(1, precond_change_count);
+    EXPECT_EQ(APEX_OK, apex_activation_device_precondition_start(&act_dev, 0));
+    EXPECT_EQ(APEX_PRECOND_RUNNING, apex_activation_device_precondition_state(&act_dev, 0));
+    EXPECT_EQ(APEX_OK, apex_activation_device_precondition_pass(&act_dev, 0));
+    EXPECT_EQ(APEX_ACTIVATION_STATE_READY, apex_activation_device_state(&act_dev));
+}
+
+// Device self-fault from any state via fault(); FAULT is terminal.
+TEST_F(ActivationWalkthrough, SelfFault) {
+    PumpUntilQuiet();
+    ValidateBothPreconditions();
+    ASSERT_EQ(APEX_ACTIVATION_STATE_READY, apex_activation_device_state(&act_dev));
+
+    apex_activation_device_fault(&act_dev, APEX_ACT_FAULT_INTERNAL_ERROR);
+    EXPECT_EQ(APEX_ACTIVATION_STATE_FAULT, apex_activation_device_state(&act_dev));
+    EXPECT_TRUE(apex_activation_device_fault_flags(&act_dev) & APEX_ACT_FAULT_INTERNAL_ERROR);
+
+    // Terminal: a host SET_ENABLED is rejected and the device stays in FAULT.
+    ASSERT_EQ(APEX_OK, apex_activation_host_set_enabled(&act_host, apex_device_get_id(&dev_core)));
+    PumpUntilQuiet();
+    EXPECT_EQ(APEX_ACTIVATION_STATE_FAULT, apex_activation_device_state(&act_dev));
+    EXPECT_EQ(APEX_ERR_BAD_STATE, apex_activation_device_disable(&act_dev));
+}
+
+// trigger() reports whether it was honored, and last_trigger_source() reflects it.
+TEST_F(ActivationWalkthrough, TriggerReturnsStatus) {
+    caps_.initial_activations_remaining = 2;
+    ReinitDevice();
+    PumpUntilQuiet();
+    uint8_t dev_id = apex_device_get_id(&dev_core);
+    ValidateBothPreconditions();
+    EXPECT_EQ(APEX_ERR_BAD_STATE, apex_activation_device_trigger(&act_dev, 1))
+        << "not ENABLED yet";
+    ASSERT_EQ(APEX_OK, apex_activation_host_set_enabled(&act_host, dev_id));
+    PumpUntilQuiet();
+    apex_activation_device_transition_complete(&act_dev);
+    PumpUntilQuiet();
+    ASSERT_EQ(APEX_ACTIVATION_STATE_ENABLED, apex_activation_device_state(&act_dev));
+    EXPECT_EQ(APEX_ERR_INVALID_ARGS, apex_activation_device_trigger(&act_dev, 9))
+        << "undeclared source";
+    EXPECT_EQ(APEX_ACTIVATION_STATE_ENABLED, apex_activation_device_state(&act_dev));
+    EXPECT_EQ(APEX_OK, apex_activation_device_trigger(&act_dev, 1));
+    EXPECT_EQ(APEX_ACTIVATION_STATE_EXECUTING, apex_activation_device_state(&act_dev));
+    EXPECT_EQ(1, apex_activation_device_last_trigger_source(&act_dev));
+}
+
+// trigger_window_expired(): flags TRIGGER_WINDOW_EXPIRED and self-disarms in one call.
+TEST_F(ActivationWalkthrough, TriggerWindowExpired) {
+    caps_.initial_activations_remaining = 2;
+    ReinitDevice();
+    PumpUntilQuiet();
+    uint8_t dev_id = apex_device_get_id(&dev_core);
+    ValidateBothPreconditions();
+    ASSERT_EQ(APEX_OK, apex_activation_host_set_enabled(&act_host, dev_id));
+    PumpUntilQuiet();
+    apex_activation_device_transition_complete(&act_dev);
+    PumpUntilQuiet();
+    ASSERT_EQ(APEX_ACTIVATION_STATE_ENABLED, apex_activation_device_state(&act_dev));
+
+    disable_began = false;
+    EXPECT_EQ(APEX_OK, apex_activation_device_trigger_window_expired(&act_dev));
+    EXPECT_TRUE(apex_activation_device_fault_flags(&act_dev) &
+                APEX_ACT_FAULT_TRIGGER_WINDOW_EXPIRED);
+    EXPECT_TRUE(disable_began) << "atomically disarms";
+    EXPECT_EQ(APEX_ACTIVATION_STATE_DISABLING, apex_activation_device_state(&act_dev));
+    apex_activation_device_transition_complete(&act_dev);
+    EXPECT_EQ(APEX_ACTIVATION_STATE_READY, apex_activation_device_state(&act_dev));
 }
 
 }  // namespace

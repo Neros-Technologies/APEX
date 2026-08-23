@@ -286,18 +286,20 @@ static void dev_arm_after_connect(apex_activation_device_t *act)
      * Running, and an EXHAUSTED device stays EXHAUSTED. */
     if (act->state != APEX_ACTIVATION_STATE_STANDBY) return;
 
-    /* Apply the auto_start_mask: auto-started preconditions begin in Running. */
-    for (uint8_t i = 0; i < act->caps.n_preconditions; i++) {
-        if (act->caps.auto_start_mask & (uint16_t)(1u << i)) {
-            act->precondition_states[i] = APEX_PRECOND_RUNNING;
-        }
-    }
     if (act->caps.n_preconditions == 0) {
         /* §3 STANDBY → READY with no preconditions. */
         dev_set_state(act, APEX_ACTIVATION_STATE_READY);
-    } else if (act->caps.auto_start_mask != 0) {
-        dev_set_state(act, APEX_ACTIVATION_STATE_VALIDATING);
-        dev_maybe_advance_to_ready(act);
+        return;
+    }
+
+    /* Apply the auto_start_mask: auto-started preconditions begin in Running.
+     * Routed through set_precondition_state so the STANDBY → VALIDATING move and
+     * the on_precondition_change observer both fire on this initial transition. */
+    for (uint8_t i = 0; i < act->caps.n_preconditions; i++) {
+        if (act->caps.auto_start_mask & (uint16_t)(1u << i)) {
+            apex_activation_device_set_precondition_state(act, i,
+                                                          APEX_PRECOND_RUNNING);
+        }
     }
 }
 
@@ -381,28 +383,72 @@ void apex_activation_device_set_precondition_state(apex_activation_device_t *act
     if (new_state == APEX_PRECOND_VALID) {
         dev_maybe_advance_to_ready(act);
     }
-}
-
-void apex_activation_device_trigger(apex_activation_device_t *act,
-                                    uint8_t source_idx)
-{
-    if (!act) return;
-    /* §3: triggers are honored only in ENABLED. In ENABLING/DISABLING (and after
-     * an accepted SET_DISABLED) the device is not in ENABLED, so it does not
-     * fire — this is the enforcement point for internal trigger sources. */
-    if (act->state != APEX_ACTIVATION_STATE_ENABLED) return;
-    if (source_idx >= act->caps.n_trigger_sources) return;
-    act->last_trigger_source = source_idx;
-    dev_set_state(act, APEX_ACTIVATION_STATE_EXECUTING);
-    if (act->hooks.on_execute) {
-        act->hooks.on_execute(act->hooks.on_execute_user);
+    if (act->hooks.on_precondition_change) {
+        act->hooks.on_precondition_change(act->hooks.on_precondition_change_user,
+                                          idx, new_state);
     }
 }
 
-void apex_activation_device_complete_execution(apex_activation_device_t *act)
+apex_status_t apex_activation_device_precondition_start(apex_activation_device_t *act,
+                                                        uint8_t idx)
 {
-    if (!act) return;
-    if (act->state != APEX_ACTIVATION_STATE_EXECUTING) return;
+    if (!act || idx >= act->caps.n_preconditions) return APEX_ERR_INVALID_ARGS;
+    if ((apex_precond_state_t)act->precondition_states[idx] == APEX_PRECOND_VALID) {
+        return APEX_ERR_BAD_STATE;   /* latched — cannot restart (§4.1) */
+    }
+    apex_activation_device_set_precondition_state(act, idx, APEX_PRECOND_RUNNING);
+    return APEX_OK;
+}
+
+apex_status_t apex_activation_device_precondition_pass(apex_activation_device_t *act,
+                                                       uint8_t idx)
+{
+    if (!act || idx >= act->caps.n_preconditions) return APEX_ERR_INVALID_ARGS;
+    /* Idempotent: already-Valid is success (set_precondition_state no-ops it). */
+    apex_activation_device_set_precondition_state(act, idx, APEX_PRECOND_VALID);
+    return APEX_OK;
+}
+
+apex_status_t apex_activation_device_precondition_fail(apex_activation_device_t *act,
+                                                       uint8_t idx)
+{
+    if (!act || idx >= act->caps.n_preconditions) return APEX_ERR_INVALID_ARGS;
+    if ((apex_precond_state_t)act->precondition_states[idx] == APEX_PRECOND_VALID) {
+        return APEX_ERR_BAD_STATE;   /* latched Valid cannot fail (§4.1) */
+    }
+    apex_activation_device_set_precondition_state(act, idx, APEX_PRECOND_FAILED);
+    return APEX_OK;
+}
+
+apex_status_t apex_activation_device_trigger(apex_activation_device_t *act,
+                                             uint8_t source_idx)
+{
+    if (!act) return APEX_ERR_INVALID_ARGS;
+    /* §3: triggers are honored only in ENABLED. In ENABLING/DISABLING (and after
+     * an accepted SET_DISABLED) the device is not in ENABLED — reject. */
+    if (act->state != APEX_ACTIVATION_STATE_ENABLED) return APEX_ERR_BAD_STATE;
+    if (source_idx >= act->caps.n_trigger_sources) return APEX_ERR_INVALID_ARGS;
+    act->last_trigger_source = source_idx;
+    dev_set_state(act, APEX_ACTIVATION_STATE_EXECUTING);
+    /* Software path: ask the application to perform the activation now. The
+     * neutral on_executed fires later, when the app calls complete_execution().
+     * The hook is a notification, not the only completion path — an app without
+     * it must still complete the EXECUTING state itself (complete_execution or
+     * report_execution). */
+    if (act->hooks.on_execute_request) {
+        act->hooks.on_execute_request(act->hooks.on_execute_request_user,
+                                      source_idx);
+    }
+    return APEX_OK;
+}
+
+/* Settle an in-progress EXECUTING activation: decrement the budget, move to
+ * ENABLED or EXHAUSTED, fire the neutral on_executed, then honor any owed
+ * self-disarm. Shared by the software completion path (complete_execution) and
+ * the hardware-already-happened path (report_execution). Precondition: the
+ * device is in EXECUTING. */
+static void dev_finish_execution(apex_activation_device_t *act)
+{
     if (act->activations_remaining != APEX_ACT_ACTIVATIONS_UNLIMITED &&
         act->activations_remaining > 0) {
         act->activations_remaining--;
@@ -411,17 +457,72 @@ void apex_activation_device_complete_execution(apex_activation_device_t *act)
         dev_set_state(act, APEX_ACTIVATION_STATE_EXHAUSTED);
     } else {
         dev_set_state(act, APEX_ACTIVATION_STATE_ENABLED);
-        /* §7.4: EXECUTING runs to completion even across a session loss (a
-         * RESET_REQUEST is deferred while EXECUTING; the watchdog is not). If a
-         * session was lost during this action, the device owes a self-disarm
-         * (self_disarm_pending) — honor it now rather than re-arm into the gap,
-         * so no successor host inherits a payload it did not itself arm. This
-         * holds even if a new session re-formed mid-action. An ordinary
-         * multi-activation return to ENABLED (no lost session) leaves it armed. */
-        if (act->self_disarm_pending) {
-            dev_self_disable(act);
-        }
     }
+    if (act->hooks.on_executed) {
+        act->hooks.on_executed(act->hooks.on_executed_user,
+                               act->last_trigger_source);
+    }
+    /* §7.4: EXECUTING runs to completion even across a session loss (a
+     * RESET_REQUEST is deferred while EXECUTING; the watchdog is not). If a
+     * session was lost during this action the device owes a self-disarm — honor
+     * it now rather than re-arm into the gap, even if a new session re-formed
+     * mid-action. An ordinary multi-activation return to ENABLED (no lost
+     * session) leaves the device armed. */
+    if (act->state == APEX_ACTIVATION_STATE_ENABLED && act->self_disarm_pending) {
+        dev_self_disable(act);
+    }
+}
+
+void apex_activation_device_complete_execution(apex_activation_device_t *act)
+{
+    if (!act) return;
+    if (act->state != APEX_ACTIVATION_STATE_EXECUTING) return;
+    dev_finish_execution(act);
+}
+
+apex_status_t apex_activation_device_report_execution(apex_activation_device_t *act,
+                                                      uint8_t source_idx)
+{
+    if (!act) return APEX_ERR_INVALID_ARGS;
+    /* §3: like any trigger, honored only in ENABLED. */
+    if (act->state != APEX_ACTIVATION_STATE_ENABLED) return APEX_ERR_BAD_STATE;
+    if (source_idx >= act->caps.n_trigger_sources) return APEX_ERR_INVALID_ARGS;
+    /* The activation already occurred in hardware — pass through EXECUTING (so
+     * the host sees the §3 transition) and complete it in the same call. */
+    act->last_trigger_source = source_idx;
+    dev_set_state(act, APEX_ACTIVATION_STATE_EXECUTING);
+    dev_finish_execution(act);
+    return APEX_OK;
+}
+
+apex_status_t apex_activation_device_disable(apex_activation_device_t *act)
+{
+    if (!act) return APEX_ERR_INVALID_ARGS;
+    switch (act->state) {
+    case APEX_ACTIVATION_STATE_ENABLED:
+        dev_self_disable(act);   /* → DISABLING (fires on_disable_begin) or READY */
+        return APEX_OK;
+    case APEX_ACTIVATION_STATE_ENABLING:
+        if (!act->caps.can_abort_enabling) return APEX_ERR_BAD_STATE;
+        dev_self_disable(act);   /* abort toward READY */
+        return APEX_OK;
+    case APEX_ACTIVATION_STATE_DISABLING:
+    case APEX_ACTIVATION_STATE_READY:
+        return APEX_OK;          /* already disarming / disarmed — idempotent */
+    default:
+        /* STANDBY, VALIDATING, EXECUTING, EXHAUSTED, FAULT: nothing to disarm. */
+        return APEX_ERR_BAD_STATE;
+    }
+}
+
+apex_status_t apex_activation_device_trigger_window_expired(apex_activation_device_t *act)
+{
+    if (!act) return APEX_ERR_INVALID_ARGS;
+    /* §4.1: window elapsed with no trigger — flag it (self-clearing) and return
+     * to a safer state, atomically, so the two never drift apart. */
+    act->fault_flags |= APEX_ACT_FAULT_TRIGGER_WINDOW_EXPIRED;
+    act->status_dirty = true;
+    return apex_activation_device_disable(act);
 }
 
 void apex_activation_device_transition_complete(apex_activation_device_t *act)
@@ -476,6 +577,20 @@ void apex_activation_device_clear_fault_flag(apex_activation_device_t *act,
     if (flag && (act->fault_flags & flag)) {
         act->fault_flags &= (uint16_t)~flag;
         act->status_dirty = true;
+    }
+}
+
+void apex_activation_device_fault(apex_activation_device_t *act, uint16_t flags)
+{
+    if (!act) return;
+    /* §3: any state → FAULT on a critical error. Record the reason, then force
+     * the terminal transition regardless of whether `flags` are latched (that is
+     * the difference from set_fault_flag). FAULT is terminal in this class
+     * version — only a device reset (re-init) recovers. */
+    act->fault_flags |= flags;
+    act->status_dirty = true;
+    if (act->state != APEX_ACTIVATION_STATE_FAULT) {
+        dev_set_state(act, APEX_ACTIVATION_STATE_FAULT);
     }
 }
 
@@ -618,13 +733,19 @@ static void dev_handle_trigger(apex_activation_device_t *act)
         dev_send_ack(act, APEX_ACT_CMD_TRIGGER, APEX_ACT_REJECT_WRONG_STATE);
         return;
     }
-    /* Send the ACK *before* firing on_execute so the host sees the EXECUTING
+    /* Send the ACK *before* firing on_execute_request so the host sees the EXECUTING
      * transition (§9.4 Step 7 — the ACK carries current_state=EXECUTING). */
+    /* Send the ACK *before* firing on_execute_request so the host sees the
+     * EXECUTING transition (§9.4 Step 7 — the ACK carries current_state=EXECUTING).
+     * The application performs the activation and calls complete_execution()
+     * (which fires on_executed). An app that declares a HOST_COMMAND source is
+     * responsible for completing EXECUTING — via the hook or its own logic. */
     act->last_trigger_source = host_cmd_idx;
     dev_set_state(act, APEX_ACTIVATION_STATE_EXECUTING);
     dev_send_ack(act, APEX_ACT_CMD_TRIGGER, APEX_ACT_ACCEPTED);
-    if (act->hooks.on_execute) {
-        act->hooks.on_execute(act->hooks.on_execute_user);
+    if (act->hooks.on_execute_request) {
+        act->hooks.on_execute_request(act->hooks.on_execute_request_user,
+                                      host_cmd_idx);
     }
 }
 
