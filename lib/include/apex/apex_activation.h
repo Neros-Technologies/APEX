@@ -84,18 +84,14 @@ typedef enum {
 #define APEX_ACTIVATION_GPIO_PIN_MASK        0x7Fu
 #define APEX_ACTIVATION_GPIO_ACTIVE_HIGH_BIT 0x80u
 
-/* §6.1 inner-payload sub-header message ids. IDs 5 and 6 were PRECOND_INFO_
- * REQUEST / PRECOND_INFO_REPLY in class version 0; they are RETIRED in v1 and
- * are **never reused** — dual-stack code can therefore never confuse a retired
- * id with a new message. */
+/* §6.1 inner-payload sub-header message ids. */
 typedef enum {
     APEX_ACT_MSG_CAPABILITY        = 1,
     APEX_ACT_MSG_COMMAND           = 2,
     APEX_ACT_MSG_STATUS            = 3,
     APEX_ACT_MSG_ACK               = 4,
-    /* 5, 6 retired (class v0 PRECOND_INFO); never reused. */
-    APEX_ACT_MSG_HOST_DISPLAY_INFO = 7,  /* host → device (§6.7) */
-    APEX_ACT_MSG_DISPLAY_TEXT      = 8,  /* device → host (§6.8) */
+    APEX_ACT_MSG_HOST_DISPLAY_INFO = 5,  /* host → device (§6.7) */
+    APEX_ACT_MSG_DISPLAY_TEXT      = 6,  /* device → host (§6.8) */
 } apex_activation_msg_id_t;
 
 typedef enum {

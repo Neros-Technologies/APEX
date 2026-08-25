@@ -315,8 +315,8 @@ TEST_F(ActivationWalkthrough, FullSingleActivationLifecycleByteExact) {
         0x00,  // n_gpio_bindings = 0 (frame ends here)
     })) << "CAPABILITY must match §9 Step 1 (LN=0x16)";
 
-    // ── Step 1: host answers with HOST_DISPLAY_INFO (07 14 01, LN=03) ───────
-    EXPECT_TRUE(HasHostFrame({0x07, 0x14, 0x01}))
+    // ── Step 1: host answers with HOST_DISPLAY_INFO (05 14 01, LN=03) ───────
+    EXPECT_TRUE(HasHostFrame({0x05, 0x14, 0x01}))
         << "HOST_DISPLAY_INFO char_limit=20, n_banner_lines=1";
 
     // ── Step 2: STATUS (VALIDATING, precond 0 Running) — 03 02 01 FF 00 00 01 00
@@ -327,7 +327,7 @@ TEST_F(ActivationWalkthrough, FullSingleActivationLifecycleByteExact) {
               apex_activation_device_push_text(&act_dev, 0x00, "SELF TEST 2/3..."));
     PumpUntilQuiet();
     EXPECT_TRUE(HasDevFrame({
-        0x08, 0x00, 0x10,  // DISPLAY_TEXT, target 0, text_len 16
+        0x06, 0x00, 0x10,  // DISPLAY_TEXT, target 0, text_len 16
         0x53, 0x45, 0x4C, 0x46, 0x20, 0x54, 0x45, 0x53, 0x54, 0x20,
         0x32, 0x2F, 0x33, 0x2E, 0x2E, 0x2E,  // "SELF TEST 2/3..."
     })) << "DISPLAY_TEXT must match §9 Step 2 (LN=0x13)";

@@ -125,8 +125,8 @@ Activation device class (class version 1)
 - CAPABILITY changes: class_spec_version is removed (CONFIG_REPLY is the one
   source of truth); an enable/disable timing tail is added.
 - DISPLAY_TEXT (Device → Host, advisory) and HOST_DISPLAY_INFO
-  (Host → Device) replace the static PRECOND_INFO exchange. Class message ids
-  5 and 6 are retired and never reused; the new messages take ids 7 and 8.
+  (Host → Device) replace the static PRECOND_INFO exchange, taking over its
+  class message ids 5 and 6.
 - A device in EXECUTING defers re-enumeration.
 - On losing its session (re-enumeration or watchdog), a device self-issues
   SET_DISABLED: the armed state does not survive, so no successor host

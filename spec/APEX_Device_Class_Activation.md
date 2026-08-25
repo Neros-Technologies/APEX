@@ -263,12 +263,10 @@ The Activation-class inner payload begins with a one-byte `class_msg_id` identif
 | `2` | **COMMAND** | Host → Device | A host command ([§6.2](#6-2--command-frame-host--device)). |
 | `3` | **STATUS** | Device → Host | Periodic / event status frame ([§6.5](#6-5--status-frame-device--host)). |
 | `4` | **ACK** | Device → Host | Acknowledgement of a host command ([§6.4](#6-4--ack-frame-device--host)). |
-| `5` | *(retired)* | — | Was PRECOND_INFO_REQUEST in class version 0. **Retired; never reused.** |
-| `6` | *(retired)* | — | Was PRECOND_INFO_REPLY in class version 0. **Retired; never reused.** |
-| `7` | **HOST_DISPLAY_INFO** | Host → Device | Declares the host's display real estate ([§6.7](#6-7--host_display_info-host--device)). |
-| `8` | **DISPLAY_TEXT** | Device → Host | Advisory, pushed display string ([§6.8](#6-8--display_text-device--host)). |
+| `5` | **HOST_DISPLAY_INFO** | Host → Device | Declares the host's display real estate ([§6.7](#6-7--host_display_info-host--device)). |
+| `6` | **DISPLAY_TEXT** | Device → Host | Advisory, pushed display string ([§6.8](#6-8--display_text-device--host)). |
 
-A receiver **must** silently ignore any Activation-class message whose `class_msg_id` it does not recognize (the forward-compatibility rule of Core [§3.6](APEX_Core.md#3-6--versioning)). IDs `5` and `6` are retired from class version 0's PRECOND_INFO exchange and are never reassigned, so dual-stack device code can never confuse a retired ID with a new message.
+A receiver **must** silently ignore any Activation-class message whose `class_msg_id` it does not recognize (the forward-compatibility rule of Core [§3.6](APEX_Core.md#3-6--versioning)).
 
 <a id="6-2--command-frame-host--device" name="6-2--command-frame-host--device"></a>
 ### 6.2.  Command frame (Host → Device)
@@ -445,7 +443,7 @@ Tells the device what display real estate the host has, so it can size its DISPL
 
 | Offset | Field | Width | Description |
 | --- | --- | --- | --- |
-| `0` | `class_msg_id` | `u8` | `7` (HOST_DISPLAY_INFO). |
+| `0` | `class_msg_id` | `u8` | `5` (HOST_DISPLAY_INFO). |
 | `1` | `char_limit` | `u8` | Maximum characters the host renders per display line. `0` = `32`. |
 | `2` | `n_banner_lines` | `u8` | Number of free banner lines available to this device. `0` = banner text unsupported (per-precondition lines only). |
 
@@ -460,7 +458,7 @@ Pushed by the device at any time while the class is active to annotate the host'
 
 | Offset | Field | Width | Description |
 | --- | --- | --- | --- |
-| `0` | `class_msg_id` | `u8` | `8` (DISPLAY_TEXT). |
+| `0` | `class_msg_id` | `u8` | `6` (DISPLAY_TEXT). |
 | `1` | `target` | `u8` | What the string annotates (below). |
 | `2` | `text_len` | `u8` | Length of the following string, `0`…`char_limit`. `0` **clears** the target. |
 | `3…` | `text[…]` | variable | ASCII string, **not** null-terminated. |
@@ -687,13 +685,13 @@ The frame ends at `n_gpio_bindings = 0`: with no trigger GPIO bindings, no host-
 The host then declares its display real estate with one HOST_DISPLAY_INFO frame ([§6.7](#6-7--host_display_info-host--device)) — here a 20-character line limit and one banner line. Inner payload 3 bytes (`LN = 03`):
 
 ```
-01 02 02 03    07 14 01
+01 02 02 03    05 14 01
 ```
 
 | Byte(s) | Hex | Field | Value |
 | --- | --- | --- | --- |
 | 0–3 | `01 02 02 03` | outer header | `LN=03` (3) |
-| 4 | `07` | `class_msg_id` | `7` (HOST_DISPLAY_INFO) |
+| 4 | `05` | `class_msg_id` | `5` (HOST_DISPLAY_INFO) |
 | 5 | `14` | `char_limit` | `20` |
 | 6 | `01` | `n_banner_lines` | `1` |
 
@@ -721,13 +719,13 @@ Precondition `0` auto-starts; the device enters VALIDATING and emits a STATUS fr
 While the self-test runs, the device pushes a DISPLAY_TEXT line for precondition `0` ([§6.8](#6-8--display_text-device--host)) — `target = 0x00`, the string `"SELF TEST 2/3..."` (16 characters, within the host's 20-char limit). It is advisory and unacknowledged. Inner payload `3 + 16 = 19` bytes (`LN = 13`):
 
 ```
-01 02 02 13    08 00 10 53 45 4C 46 20 54 45 53 54 20 32 2F 33 2E 2E 2E
+01 02 02 13    06 00 10 53 45 4C 46 20 54 45 53 54 20 32 2F 33 2E 2E 2E
 ```
 
 | Byte(s) | Hex | Field | Value |
 | --- | --- | --- | --- |
 | 0–3 | `01 02 02 13` | outer header | `LN=13` (19) |
-| 4 | `08` | `class_msg_id` | `8` (DISPLAY_TEXT) |
+| 4 | `06` | `class_msg_id` | `6` (DISPLAY_TEXT) |
 | 5 | `00` | `target` | `0x00` (precondition `0` line) |
 | 6 | `10` | `text_len` | `16` |
 | 7–22 | `53 45 4C 46 20 54 45 53 54 20 32 2F 33 2E 2E 2E` | `text[]` | `"SELF TEST 2/3..."` |

@@ -775,7 +775,7 @@ void apex_activation_device_on_rx(apex_activation_device_t *act,
     }
 
     /* §6.1: silently ignore any class_msg_id we do not recognize (forward-
-     * compatibility). This also covers the retired ids 5 / 6. */
+     * compatibility). */
     if (msg_id != APEX_ACT_MSG_COMMAND) return;
     if (payload_len < 2) {
         dev_send_ack(act, 0, APEX_ACT_REJECT_MALFORMED);
@@ -1122,7 +1122,7 @@ static void host_class_rx(void *user, uint8_t device_id,
         host_handle_display_text(h, device_id, body, body_len);
         break;
     default:
-        /* §6.1: silently ignore unrecognized ids (incl. retired 5 / 6). */
+        /* §6.1: silently ignore unrecognized class_msg_id (forward-compat). */
         break;
     }
 }
