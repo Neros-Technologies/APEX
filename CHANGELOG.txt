@@ -110,6 +110,9 @@ New core messages
   hot-replaced.
 - Pre-CONNECTED liveness: before a slot reaches CONNECTED, only addressed
   frames refresh its watchdog.
+- HOST_STATE gains a warnings bitfield alongside flight_state — an advisory
+  field orthogonal to the flight phase, so a warning coexists with any phase and
+  multiple can be set at once. Bit 0 = RC link loss; remaining bits reserved.
 
 Activation device class (class version 1)
 - State values renumbered into lifecycle order (STANDBY=1 … EXHAUSTED=8),

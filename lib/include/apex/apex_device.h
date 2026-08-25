@@ -62,8 +62,11 @@ typedef void (*apex_device_class_rx_cb_t)(void *user,
 typedef void (*apex_device_link_event_cb_t)(void *user,
                                             apex_device_link_state_t state);
 
+/* HOST_STATE delivery (§3.2.5). `warnings` is the advisory bitfield (OR of
+ * APEX_HOST_WARNING_* bits, 0 = none), orthogonal to flight_state. */
 typedef void (*apex_device_host_state_cb_t)(void *user,
-                                            apex_flight_state_t flight_state);
+                                            apex_flight_state_t flight_state,
+                                            uint8_t warnings);
 
 typedef void (*apex_device_name_request_cb_t)(void *user,
                                               uint8_t bytes_allocated);

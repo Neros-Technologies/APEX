@@ -495,6 +495,7 @@ than in any one device-class spec.
 | Field | Size | Description |
 | --- | --- | --- |
 | `flight_state` | `u8` | Host's current flight state (see below). |
+| `warnings` | `u8` | Advisory warning bitfield, orthogonal to `flight_state` (see below). |
 
 **`flight_state` values:**
 
@@ -505,6 +506,23 @@ than in any one device-class spec.
 | `0x02` | `PROPS_ON_GND` | Propellers on; airframe on the ground. |
 | `0x03` | `PROPS_ON_FLYING` | Propellers on; airframe airborne. |
 | `0xFF` | `FAULT` | Critical failure of the Host. |
+
+**`warnings` values (bitfield):**
+
+`warnings` is **orthogonal to `flight_state`**: `flight_state` names the flight
+*phase*, while each `warnings` bit is an advisory *condition* that may hold during
+any phase. The two are independent — a warning coexists with whatever phase
+`flight_state` reports (e.g. `PROPS_ON_FLYING` with `RC_LINK_LOSS` set) — and any
+number of warning bits may be set at once. `0x00` means no warnings.
+
+| Bit | Name | Description |
+| --- | --- | --- |
+| `0` | `RC_LINK_LOSS` | The host has lost its RC / command link. |
+
+Bits `1`–`7` are reserved for future advisory conditions; a device ignores bits it
+does not recognize. Like `flight_state`, `warnings` is advisory: it does not drive
+any device's class state machine. A device that has never received a HOST_STATE
+frame treats `flight_state` as `UNKNOWN` and `warnings` as `0x00`.
 
 **Transport.** HOST_STATE is a host-originated **broadcast**: the outer-header
 `device_id` is `0xFF` ([§3.1.3](#3-1-3--device_id-ownership-and-reserved-values)), so a
@@ -518,8 +536,7 @@ CONNECTED, only frames addressed to the device count ([§3.5](#3-5--heartbeat)).
 
 HOST_STATE is advisory context only. The host does not drive any device's
 class state machine; a device class spec defines whether and how a device
-consumes `flight_state`. A device that has never received a HOST_STATE frame
-treats the host flight state as `UNKNOWN`.
+consumes `flight_state` and `warnings`.
 
 > **Open:** On a mixed-wire-version bus, the `protocol_version` a broadcast
 > frame such as HOST_STATE should carry is not yet resolved — a single broadcast

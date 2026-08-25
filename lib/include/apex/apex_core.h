@@ -155,7 +155,7 @@ typedef enum {
     APEX_ACK_REJECT_POLICY        = 0x09, /* CONFIG_REPLY. */
 } apex_ack_t;
 
-/* HOST_STATE values — §3.2.5 */
+/* HOST_STATE flight_state values — §3.2.5 */
 typedef enum {
     APEX_FLIGHT_STATE_UNKNOWN        = 0x00,
     APEX_FLIGHT_STATE_STANDBY        = 0x01,
@@ -163,6 +163,14 @@ typedef enum {
     APEX_FLIGHT_STATE_PROPS_ON_FLYING = 0x03,
     APEX_FLIGHT_STATE_FAULT          = 0xFF,
 } apex_flight_state_t;
+
+/* HOST_STATE warnings bitfield — §3.2.5. Advisory, ORTHOGONAL to flight_state:
+ * each bit is a condition (e.g. RC link loss) that may hold during any flight
+ * phase, so warnings are a separate field — not flight_state values — and any
+ * number may be set at once. `0` = no warnings; a device that has never received
+ * HOST_STATE treats warnings as 0. */
+#define APEX_HOST_WARNING_RC_LINK_LOSS  (1u << 0)  /* host has lost its RC/command link */
+/* bits 1..7 reserved for future advisory conditions */
 
 /* Baud-rate codes — §3.4 */
 typedef enum {

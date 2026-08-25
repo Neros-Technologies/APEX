@@ -231,6 +231,7 @@ typedef struct apex_host {
     apex_host_class_reg_t classes[APEX_HOST_MAX_CLASSES];
     uint8_t next_assign_id;      /* monotonic counter over the 0x02–0xFE pool */
     uint8_t flight_state;
+    uint8_t warnings;            /* §3.2.5 advisory warnings bitfield, orthogonal to flight_state */
     uint32_t now_ms;
     uint32_t last_host_state_tx_ms;
     bool host_state_ever_sent;
@@ -335,6 +336,11 @@ void apex_host_tick(apex_host_t *h, uint32_t now_ms);
 
 /* Change the host's flight state. Broadcast in the next HOST_STATE frame. */
 void apex_host_set_flight_state(apex_host_t *h, apex_flight_state_t state);
+
+/* Set the host's advisory warnings bitfield (§3.2.5), orthogonal to flight_state
+ * — an OR of APEX_HOST_WARNING_* bits, or 0 to clear. Broadcast in the next
+ * HOST_STATE frame. */
+void apex_host_set_warnings(apex_host_t *h, uint8_t warnings);
 
 /* Force an immediate HOST_STATE broadcast. */
 apex_status_t apex_host_send_host_state(apex_host_t *h);

@@ -201,7 +201,7 @@ TEST(DiscoveryV1, HostStateBroadcastReachesDevice) {
 
     apex_host_cfg_t hc = BaseHostCfg(l);
     apex_device_cfg_t dc = BaseDeviceCfg(l);
-    dc.on_host_state = [](void* u, apex_flight_state_t s) {
+    dc.on_host_state = [](void* u, apex_flight_state_t s, uint8_t) {
         auto* c = static_cast<Cap*>(u);
         *c->seen = true; *c->st = s;
     };
@@ -236,6 +236,47 @@ TEST(DiscoveryV1, DeviceWatchdogResetsOnHostSilence) {
         apex_device_tick(&l.dev, l.now_ms);
     }
     EXPECT_EQ(APEX_DEVICE_STATE_DISCOVERING, apex_device_link_state(&l.dev));
+}
+
+/* HOST_STATE carries flight_state plus an orthogonal warnings bitfield (§3.2.5):
+ * a warning coexists with any flight phase and clears independently. */
+struct HostStateCapture {
+    int count = 0;
+    apex_flight_state_t flight_state = APEX_FLIGHT_STATE_UNKNOWN;
+    uint8_t warnings = 0;
+};
+static void on_host_state_cb(void* u, apex_flight_state_t fs, uint8_t warnings) {
+    auto* p = static_cast<HostStateCapture*>(u);
+    p->count++; p->flight_state = fs; p->warnings = warnings;
+}
+
+TEST(DiscoveryV1, HostStateFlightStateAndOrthogonalWarnings) {
+    Link l;
+    HostStateCapture hs;
+    apex_host_cfg_t hc = BaseHostCfg(l);
+    apex_device_cfg_t dc = BaseDeviceCfg(l);
+    dc.on_host_state = on_host_state_cb;
+    dc.on_host_state_user = &hs;
+    l.Init(hc, dc);
+    ASSERT_EQ(APEX_OK, apex_host_register_class(&l.host, APEX_TRAFFIC_ACTIVATION,
+                                                host_class_rx, &l.host_rx));
+    l.Pump(1, 6);
+    ASSERT_EQ(APEX_DEVICE_STATE_CONNECTED, apex_device_link_state(&l.dev));
+
+    // Flight phase and an advisory warning coexist in one frame.
+    apex_host_set_flight_state(&l.host, APEX_FLIGHT_STATE_PROPS_ON_FLYING);
+    apex_host_set_warnings(&l.host, APEX_HOST_WARNING_RC_LINK_LOSS);
+    ASSERT_EQ(APEX_OK, apex_host_send_host_state(&l.host));
+    l.Pump(1, 2);
+    EXPECT_EQ(APEX_FLIGHT_STATE_PROPS_ON_FLYING, hs.flight_state);
+    EXPECT_TRUE(hs.warnings & APEX_HOST_WARNING_RC_LINK_LOSS);
+
+    // The warning clears independently; the flight phase is untouched.
+    apex_host_set_warnings(&l.host, 0);
+    ASSERT_EQ(APEX_OK, apex_host_send_host_state(&l.host));
+    l.Pump(1, 2);
+    EXPECT_EQ(APEX_FLIGHT_STATE_PROPS_ON_FLYING, hs.flight_state);
+    EXPECT_EQ(0u, hs.warnings);
 }
 
 TEST(DiscoveryV1, HostWatchdogMarksDeviceFault) {
@@ -1071,8 +1112,8 @@ WireStats ScanWire(const std::vector<uint8_t>& enc) {
 }
 
 int g_hs_seen = 0;
-void count_host_state(void* u, apex_flight_state_t s) {
-    (void)u; (void)s;
+void count_host_state(void* u, apex_flight_state_t s, uint8_t warnings) {
+    (void)u; (void)s; (void)warnings;
     g_hs_seen++;
 }
 

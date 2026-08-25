@@ -408,9 +408,13 @@ static void handle_host_state(apex_device_t *d,
                               size_t body_len)
 {
     if (body_len < 1) return;
+    /* §3.2.5: flight_state (body[0]) + orthogonal warnings bitfield (body[1]).
+     * warnings is a trailing field — treat a short frame as no warnings so a
+     * flight_state-only sender still parses. */
+    uint8_t warnings = (body_len >= 2) ? body[1] : 0u;
     if (d->cfg.on_host_state) {
         d->cfg.on_host_state(d->cfg.on_host_state_user,
-                             (apex_flight_state_t)body[0]);
+                             (apex_flight_state_t)body[0], warnings);
     }
 }
 

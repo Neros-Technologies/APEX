@@ -940,10 +940,17 @@ void apex_host_set_flight_state(apex_host_t *h, apex_flight_state_t state)
     h->flight_state = (uint8_t)state;
 }
 
+void apex_host_set_warnings(apex_host_t *h, uint8_t warnings)
+{
+    if (!h) return;
+    h->warnings = warnings;
+}
+
 apex_status_t apex_host_send_host_state(apex_host_t *h)
 {
     if (!h) return APEX_ERR_INVALID_ARGS;
-    uint8_t payload[2] = { APEX_CFG_MSG_HOST_STATE, h->flight_state };
+    /* §3.2.5: flight_state (phase) + warnings (orthogonal advisory bitfield). */
+    uint8_t payload[3] = { APEX_CFG_MSG_HOST_STATE, h->flight_state, h->warnings };
     apex_status_t s = emit_frame(h, APEX_TRAFFIC_CONFIG,
                                  APEX_DEVICE_ID_BROADCAST,
                                  payload, sizeof(payload));
