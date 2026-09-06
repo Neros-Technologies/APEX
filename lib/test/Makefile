@@ -36,7 +36,9 @@ TESTS := \
     test_cobs \
     test_crc \
     test_framer \
+    test_beacon \
     test_discovery \
+    test_negotiation \
     test_activation_walkthrough \
     test_activation_gpio \
     test_analog_hmi \

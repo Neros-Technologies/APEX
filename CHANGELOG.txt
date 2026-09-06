@@ -1,0 +1,149 @@
+APEX Protocol — Changelog
+
+This changelog begins at v1.0.0. Releases prior to v1.0.0 predate this file
+and are not recorded here. Dates are ISO 8601 (YYYY-MM-DD). "Wire version"
+refers to the APEX outer-header protocol version; "class version" refers to
+a device class's independently negotiated revision.
+
+
+v1.0.0 — 2026-08-30
+
+APEX v1.0 is a deliberately breaking revision of the wire protocol. v0
+devices and hosts do not interoperate with v1 endpoints, except through the
+optional host-local v0 dual-stack, which a host MAY run beside its v1 stack
+during transition. The mechanical standard is unchanged from v0.9. Because
+the break was unavoidable, v1.0 also settles every change that required
+renumbering.
+
+Breaking wire changes
+- The outer header is now non-zero by construction: protocol_version,
+  traffic_type, and device_id are each guaranteed non-zero on the wire.
+- Decode-free routing: a node can locate and dispatch a frame from its
+  encoded header prefix (PV/TT/ID) without COBS-decoding the body.
+- The traffic_type registry shifted by +1: CONFIG=1, ACTIVATION=2,
+  ANALOG_HMI=3, WAYFINDING=4, REPEATER=5, USB_FS_HUB=6, MAVLINK=7.
+- traffic_type 0x00 is permanently invalid on the wire.
+- A vendor / platform traffic_type range 0xF0–0xFE is allocated for
+  non-centrally-registered device classes.
+- The unassigned device_id marker moved from 0x00 to 0x01; the assigned
+  device_id pool is now 0x02–0xFE.
+- Frame sizing is unchanged: 261-byte decoded maximum, 264-byte encoded.
+
+Version negotiation
+- Two-tier versioning: a single wire version in the outer header plus an
+  independent per-class class version negotiated at discovery. A device
+  class can revise without consuming a wire version.
+- VERSION_BEACON is the immutable version-discovery frame — an ordinary v1
+  CONFIG frame marked protocol_version 0xFF, carrying a u16 min/max range of
+  supported wire versions. It is the one frame every future version must
+  recognize.
+- Proactive mutual beaconing: both endpoints beacon periodically while
+  unlinked and stop once a session is established. A link forms only when
+  each side has received the other's beacon (mutual-receipt gate); the
+  session then runs at the single mutually-supported wire version, fixed for
+  the life of the link (per-link version tier).
+- The former reactive "beacon on unintelligible input" trigger is removed;
+  receiver discipline stays strict — an unrecognized frame is dropped, not
+  answered.
+- Session frames are restricted to protocol_version 0x01–0xFE; 0xFF is
+  reserved exclusively as the beacon marker.
+- ACK_REJECT_VERSION (v0 ack code 0x03) is retired and never reused; a
+  version mismatch is now resolved by the beacon before it can reach the
+  message layer.
+- v0 is no longer negotiable in band. The optional host-local v0 dual-stack
+  bridge is documented for transition and leaves no trace once retired.
+
+Discovery and configuration
+- Provisional configuration phase: a CONFIG_REPLY may return ACK_PROVISIONAL,
+  opening a host-driven query loop. The device_id is withheld until a
+  terminal ACK_OK, which the device latches with CONFIG_ACK.
+- Ack codes now share a single global namespace across all CONFIG messages.
+- DEVICE_INFO now declares mass_grams; a host may reject an incompatible mass
+  with ACK_REJECT_MASS.
+- New PHYS family — PHYS_REQUEST / PHYS_INFO / PHYS_ACK — queries a
+  10-parameter spatial inertia (mass plus the full inertia tensor) about the
+  APEX dovetail datum, in a NED-aligned body frame with un-negated products
+  of inertia (CAD-native; the host negates once).
+- In-flight physical updates: a connected device may send unsolicited
+  PHYS_INFO as the 33-byte canonical complete physical state; latest-wins.
+- A missing or unacceptable physical declaration is rejected with
+  ACK_REJECT_PHYS — terminal in the provisional phase, advisory once
+  connected. A host may decline an otherwise-valid device with
+  ACK_REJECT_POLICY.
+- Acceptance invariant: an assigned device_id certifies acceptance. Every
+  gate runs before the id latches; there are no host-imposed post-latch
+  terminal conditions.
+
+New core messages
+- Post-CONNECTED baud change: BAUD_CHANGE_REQUEST / BAUD_CHANGE_ACK,
+  device-initiated as the first exchange after configuration. The request
+  carries a single rate code; the device ladders from its preferred rate
+  down toward its minimum. A reject carries a counter-offer hint (the host's
+  best rate at or below the request) so the ladder resolves in about two
+  round trips. The configuration phase itself is fixed at 115200 baud.
+- RESET_REQUEST (message 13) re-enumeration: a session-scoped re-enumeration
+  for comms recovery. The host runs a boot sweep with early cancellation as
+  devices answer, issues a reactive reset on traffic from an unknown
+  device_id, and a device may voluntarily announce a reset. A device class
+  may defer a reset for safety.
+- Hotplug: a device swap is arbitrated by the watchdog alone; the in-session
+  ignore rule protects the live slot until the watchdog declares the old
+  device gone. A pre-closure device drops all non-beacon input (the host's
+  beacon is its first consumable frame), and an expended-payload slot may be
+  hot-replaced.
+- Pre-CONNECTED liveness: before a slot reaches CONNECTED, only addressed
+  frames refresh its watchdog.
+- HOST_STATE gains a warnings bitfield alongside flight_state — an advisory
+  field orthogonal to the flight phase, so a warning coexists with any phase and
+  multiple can be set at once. Bit 0 = RC link loss; remaining bits reserved.
+
+Activation device class (class version 1)
+- State values renumbered into lifecycle order (STANDBY=1 … EXHAUSTED=8),
+  adding the transient states ENABLING and DISABLING for non-instant enable
+  and disable; an instant device never reports them.
+- Mid-transition reversals (SET_DISABLED while ENABLING, SET_ENABLED while
+  DISABLING) are capability-gated: a device that cannot comply rejects with
+  REJECT_BUSY, and the host retries once the transition settles.
+- A self-clearing TRANSITION_FAILED flag reports a failed enable or disable.
+- CAPABILITY changes: class_spec_version is removed (CONFIG_REPLY is the one
+  source of truth); an enable/disable timing tail is added.
+- DISPLAY_TEXT (Device → Host, advisory) and HOST_DISPLAY_INFO
+  (Host → Device) replace the static PRECOND_INFO exchange, taking over its
+  class message ids 5 and 6.
+- A device in EXECUTING defers re-enumeration.
+- On losing its session (re-enumeration or watchdog), a device self-issues
+  SET_DISABLED: the armed state does not survive, so no successor host
+  inherits a payload it did not itself arm. Neither side assumes the state
+  after the command -- the first STATUS of the new session reports it. The
+  non-armed device-internal state (latched preconditions,
+  activations_remaining, an EXHAUSTED marker) still survives.
+
+Other device classes
+- Every device class carries a class version 1 stamp for its v1.0-era
+  revision.
+- Analog HMI and Wayfinding CAPABILITY drop class_spec_version.
+- The device-class registry gains a class-version column.
+
+Reference implementation
+- Full v1 rework of the embeddable C library — Host and Device roles for
+  Core and for the Activation, Analog HMI, and Repeater classes.
+- Version-neutral type and constant renames: apex_hdr_t (was ApexV0Hdr_t),
+  APEX_MAX_FRAME_LENGTH (was APEX_V0_MAX_FRAME_LENGTH). The wire version is
+  now data, not a type name.
+- APEX_MAX_FRAME_LENGTH is 261 decoded / 264 encoded — the encoded maximum
+  corrects the earlier value of 265.
+- The host device-lifecycle state formerly named NEW is renamed PROVISIONAL.
+- Device-side Activation API ergonomics for the full spec-allowed range: execute
+  callbacks split into on_execute_request (software must act) and a neutral
+  on_executed, with report_execution() recording a hardware activation in one
+  call; self-initiated disable(), fault(), and trigger_window_expired();
+  autonomous preconditions via precondition_start/pass/fail() and an
+  on_precondition_change observer; status-returning trigger()/report_execution();
+  and read-only getters (activations_remaining, precondition_state, fault_flags,
+  last_trigger_source).
+- Tests: 10 gtest suites, 130 tests, all passing.
+
+Documentation
+- Core, Activation, Analog HMI, Repeater, and Wayfinding specs rewritten for
+  v1.0; the device-class registry updated.
+- Reference-implementation README updated to v1.

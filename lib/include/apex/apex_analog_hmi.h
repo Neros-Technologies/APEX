@@ -1,7 +1,7 @@
 /**
  * @file apex_analog_hmi.h
- * @brief Analog HMI device class (traffic_type = 2). Both Host and Device
- *        sides. See spec/APEX_Analog_HMI_Class.md for the wire protocol.
+ * @brief Analog HMI device class (traffic_type = 3). Both Host and Device
+ *        sides. See spec/APEX_Device_Class_Analog_HMI.md for the wire protocol.
  *
  * Operating model: payload streams control packets (CRSF or MAVLink 2) to the
  * host unprompted at 25-100 Hz typical. Host configures wire format and CVBS
@@ -74,7 +74,7 @@ typedef enum {
 
 /* Max control-frame body that fits in one APEX V0 inner payload.
  * One byte is consumed by the class_msg_id (CONTROL_DATA = 4). */
-#define APEX_HMI_MAX_CONTROL_FRAME_BYTES (APEX_V0_MAX_PAYLOAD_LENGTH - 1u)
+#define APEX_HMI_MAX_CONTROL_FRAME_BYTES (APEX_MAX_PAYLOAD_LENGTH - 1u)
 
 /* ---------------------------------------------------------------------------
  * Device-side
@@ -89,8 +89,6 @@ typedef struct {
     uint8_t supported_cvbs_modes;
     /* Intended CONTROL_DATA TX rate (Hz). Informational. 0 = event-driven. */
     uint8_t intended_rate_hz;
-    /* Class spec revision implemented. 0 = the revision in this header. */
-    uint8_t class_spec_version;
 } apex_hmi_device_caps_t;
 
 typedef struct {
