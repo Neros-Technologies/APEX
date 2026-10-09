@@ -81,6 +81,13 @@ drawing) published alongside this document.
 
 The electrical connectors chosen for APEX are the
 [TE "DC Jack Connector" range of 2.5 mm-pitch blade connectors](https://www.te.com/en/plp/battery-connectors-dc-jacks/Y30na.html).
+The reference parts, as modeled in the mechanical standard package, are:
+
+| Side | Role | TE Part Number | Description |
+| --- | --- | --- | --- |
+| Carrier (Host) | Female receptacle | [1-1473776-7](https://www.te.com/en/product-1-1473776-7.html) | 10 position, 2.5 mm pitch, receptacle, vertical PCB mount |
+| Payload (Device) | Male blade plug | [1123684-7](https://www.te.com/en/product-1123684-7.html) | 10 position, 2.5 mm pitch, plug, right-angle PCB mount |
+
 Any alternate brand or custom connector is also an acceptable choice if it can be
 shown to be fully interoperable with the TE series with equivalent dimensional
 control. Care should be taken to route and/or shield any PCBAs or wire harnesses
