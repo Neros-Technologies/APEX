@@ -6,6 +6,28 @@ refers to the APEX outer-header protocol version; "class version" refers to
 a device class's independently negotiated revision.
 
 
+v1.0.1 — 2026-10-08
+
+Mechanical and documentation update. No wire-protocol or reference-library
+changes; wire version and all class versions are unchanged.
+
+Mechanical
+- The mechanical standard package is now APEX STANDARD V1.0.1 (STEP model
+  and drawing), replacing V0.9.
+- Payload wedge: straight-section width reduced by 0.1 mm to avoid
+  interference under worst-case tolerance stack-up.
+- Drawing: connector blade-position callout clarified with centerlines.
+- Reference designs: carrier and payload assembly and PCBA STEP models
+  updated.
+- Added PCB fabrication data (Gerbers, NC drill, BOM) for the carrier and
+  payload reference boards, as one zip per board in
+  spec/mechanical/reference/.
+
+Core specification
+- The Electrical Interface section now names the reference TE part
+  numbers: 1-1473776-7 (carrier receptacle) and 1123684-7 (payload plug).
+
+
 v1.0.0 — 2026-08-30
 
 APEX v1.0 is a deliberately breaking revision of the wire protocol. v0

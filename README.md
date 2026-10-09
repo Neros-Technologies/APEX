@@ -47,16 +47,18 @@ allocation, no `stdio`, and no third-party dependencies. See
 
 The normative mechanical standard is provided under
 [`spec/mechanical/`](spec/mechanical/): a 3D CAD model of the connector assembly
-in STEP format (`APEX STANDARD V0.9.STEP`) and the corresponding 2D drawing in
-PDF (`APEX STANDARD V0.9.pdf`).
+in STEP format (`APEX STANDARD V1.0.1.STEP`) and the corresponding 2D drawing in
+PDF (`APEX STANDARD V1.0.1.pdf`).
 
 Non-normative reference designs are provided under
 [`spec/mechanical/reference/`](spec/mechanical/reference/) as an example of a
 conforming implementation. For each of the **carrier** (host side) and the
-**payload** (device side) there are two STEP models:
+**payload** (device side) there are two STEP models and a fabrication package:
 
 - `APEX <role> PCBA, REFERENCE IMPLEMENTATION.STEP` — the bare populated board.
 - `APEX <role> REFERENCE IMPLEMENTATION.STEP` — the full mechanical assembly.
+- `APEX <role> PCBA, REFERENCE IMPLEMENTATION GERBERS.zip` — PCB fabrication
+  data for the board: Gerber layers, NC drill files, and a bill of materials.
 
 These reference designs are informative only; the connector standard above is
 the authoritative geometry.
