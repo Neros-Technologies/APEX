@@ -211,6 +211,63 @@ TEST_F(ActivationGpio, CapabilityDeclaresGpioMapping) {
     EXPECT_FALSE(cap.last.gpio_bindings[1].active_high);  // Pin 4 active-low
 }
 
+// The host drops a CAPABILITY frame that §6.3 calls malformed (a count above its
+// limit, an undeclared index, or a pin other than 3/4) instead of passing
+// untrusted indices to on_capability. Frames are delivered straight to the
+// registered Activation class handler, as if from device id 2.
+static void DeliverToActivationClass(apex_host_t* h, const std::vector<uint8_t>& payload) {
+    for (const auto& reg : h->classes) {
+        if (reg.registered && reg.traffic_type == APEX_TRAFFIC_ACTIVATION) {
+            reg.rx(reg.user, 2, payload.data(), payload.size());
+            return;
+        }
+    }
+    FAIL() << "Activation class not registered";
+}
+
+// class_msg_id + uuid + n_preconditions + n_trigger_sources + categories, then
+// the given optional tails.
+static std::vector<uint8_t> Capability(uint8_t n_pre, uint8_t n_trig,
+                                       const std::vector<uint8_t>& tails) {
+    std::vector<uint8_t> p = {APEX_ACT_MSG_CAPABILITY};
+    p.insert(p.end(), 16, 0xAB);
+    p.push_back(n_pre);
+    p.push_back(n_trig);
+    for (uint8_t i = 0; i < n_trig; i++) p.push_back(APEX_TRIGGER_HOST_COMMAND);
+    p.insert(p.end(), tails.begin(), tails.end());
+    return p;
+}
+
+TEST_F(ActivationGpio, HostAcceptsWellFormedCapability) {
+    // 2 preconditions, 2 trigger sources; precondition 1 on Pin 3 active-high;
+    // trigger 1 on Pin 4; one host condition for precondition 0.
+    DeliverToActivationClass(&host, Capability(2, 2, {1, 1, 0x83,
+                                                      1, 1, 0x04,
+                                                      1, 0, 1, 0x10, 0x00, 1}));
+    ASSERT_EQ(1, cap.count);
+    EXPECT_EQ(1, cap.last.n_gpio_bindings);
+    EXPECT_EQ(1, cap.last.gpio_bindings[0].precondition_idx);
+    EXPECT_EQ(1, cap.last.n_gpio_trigger_bindings);
+    EXPECT_EQ(1, cap.last.n_host_conditions);
+}
+
+TEST_F(ActivationGpio, HostDropsMalformedCapability) {
+    const std::vector<std::vector<uint8_t>> malformed = {
+        Capability(17, 1, {}),                    // n_preconditions above 16
+        Capability(2, 0, {}),                     // no trigger sources
+        Capability(2, 2, {1, 2, 0x83}),           // binding to undeclared precondition 2
+        Capability(2, 2, {1, 0, 0x85}),           // Pin 5 is not a GPIO pin
+        Capability(1, 2, {2, 0, 0x83, 0, 0x04}),  // 2 bindings for 1 precondition
+        Capability(2, 2, {0, 1, 2, 0x04}),        // trigger binding to undeclared source 2
+        Capability(2, 1, {0, 2, 0, 0x83, 0, 0x04}),     // 2 trigger bindings for 1 source
+        Capability(2, 2, {0, 0, 1, 3, 1, 0x10, 0x00, 1}),  // host condition on precondition 3
+    };
+    for (size_t i = 0; i < malformed.size(); i++) {
+        DeliverToActivationClass(&host, malformed[i]);
+        EXPECT_EQ(0, cap.count) << "malformed CAPABILITY #" << i << " was accepted";
+    }
+}
+
 TEST_F(ActivationGpio, GpioDrivesPreconditionsToReady) {
     PumpUntilQuiet();
     ASSERT_EQ(APEX_DEVICE_STATE_CONNECTED, apex_device_link_state(&dev_core));

@@ -951,6 +951,11 @@ void apex_activation_device_tick(apex_activation_device_t *act, uint32_t now_ms)
  * Host-side
  * ========================================================================= */
 
+static bool gpio_pin_valid(uint8_t pin)
+{
+    return pin == APEX_ACTIVATION_GPIO_PIN3 || pin == APEX_ACTIVATION_GPIO_PIN4;
+}
+
 static void host_handle_capability(apex_activation_host_t *h,
                                    uint8_t device_id,
                                    const uint8_t *body, size_t body_len)
@@ -966,7 +971,13 @@ static void host_handle_capability(apex_activation_host_t *h,
     off += 16;
     cap.n_preconditions = body[off++];
     cap.n_trigger_sources = body[off++];
-    if (cap.n_trigger_sources > APEX_ACTIVATION_MAX_TRIGGER_SOURCES) return;
+    /* §6.3: n_preconditions 0..16, n_trigger_sources 1..16. A binding count
+     * above its limit, an undeclared index, or a pin other than 3/4 makes the
+     * frame malformed; drop it (Core §3.8) rather than hand the application
+     * indices it cannot trust. */
+    if (cap.n_preconditions > APEX_ACTIVATION_MAX_PRECONDITIONS) return;
+    if (cap.n_trigger_sources == 0 ||
+        cap.n_trigger_sources > APEX_ACTIVATION_MAX_TRIGGER_SOURCES) return;
     if (body_len < off + cap.n_trigger_sources) return;
     for (uint8_t i = 0; i < cap.n_trigger_sources; i++) {
         cap.trigger_source_categories[i] = body[off + i];
@@ -975,13 +986,15 @@ static void host_handle_capability(apex_activation_host_t *h,
     /* GPIO-backed precondition mappings — optional tail. */
     if (body_len >= off + 1) {
         uint8_t ng = body[off++];
-        if (ng > APEX_ACTIVATION_MAX_PRECONDITIONS) return;
+        if (ng > cap.n_preconditions) return;
         if (body_len < off + (size_t)ng * 2) return;
         cap.n_gpio_bindings = ng;
         for (uint8_t i = 0; i < ng; i++) {
             cap.gpio_bindings[i].precondition_idx = body[off++];
             uint8_t pin_byte = body[off++];
             cap.gpio_bindings[i].pin = pin_byte & APEX_ACTIVATION_GPIO_PIN_MASK;
+            if (cap.gpio_bindings[i].precondition_idx >= cap.n_preconditions ||
+                !gpio_pin_valid(cap.gpio_bindings[i].pin)) return;
             cap.gpio_bindings[i].active_high =
                 (pin_byte & APEX_ACTIVATION_GPIO_ACTIVE_HIGH_BIT) != 0;
         }
@@ -989,13 +1002,15 @@ static void host_handle_capability(apex_activation_host_t *h,
     /* GPIO-backed trigger source mappings — optional tail. */
     if (body_len >= off + 1) {
         uint8_t nt = body[off++];
-        if (nt > APEX_ACTIVATION_MAX_TRIGGER_SOURCES) return;
+        if (nt > cap.n_trigger_sources) return;
         if (body_len < off + (size_t)nt * 2) return;
         cap.n_gpio_trigger_bindings = nt;
         for (uint8_t i = 0; i < nt; i++) {
             cap.gpio_trigger_bindings[i].trigger_source_idx = body[off++];
             uint8_t pin_byte = body[off++];
             cap.gpio_trigger_bindings[i].pin = pin_byte & APEX_ACTIVATION_GPIO_PIN_MASK;
+            if (cap.gpio_trigger_bindings[i].trigger_source_idx >= cap.n_trigger_sources ||
+                !gpio_pin_valid(cap.gpio_trigger_bindings[i].pin)) return;
             cap.gpio_trigger_bindings[i].active_high =
                 (pin_byte & APEX_ACTIVATION_GPIO_ACTIVE_HIGH_BIT) != 0;
         }
@@ -1003,11 +1018,12 @@ static void host_handle_capability(apex_activation_host_t *h,
     /* Host-condition bindings — optional tail (§6.3). 5 bytes each. */
     if (body_len >= off + 1) {
         uint8_t nhc = body[off++];
-        if (nhc > APEX_ACTIVATION_MAX_PRECONDITIONS) return;
+        if (nhc > cap.n_preconditions) return;
         if (body_len < off + (size_t)nhc * 5) return;
         cap.n_host_conditions = nhc;
         for (uint8_t i = 0; i < nhc; i++) {
             cap.host_conditions[i].precondition_idx = body[off++];
+            if (cap.host_conditions[i].precondition_idx >= cap.n_preconditions) return;
             cap.host_conditions[i].host_condition   = body[off++];
             cap.host_conditions[i].condition_param =
                 (uint16_t)body[off] | ((uint16_t)body[off + 1] << 8);
